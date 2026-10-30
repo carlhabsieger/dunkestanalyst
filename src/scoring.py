@@ -58,11 +58,11 @@ def dunkest_score(b: BoxScore) -> float:
         + _doubles_bonus(b)
         + (1.0 if b.started else 0.0)
     )
-    if b.team_won:
-        score *= 1.05       # hypothèse : 5 % du score total
     return score
 
 
 def captain_score(score: float) -> float:
     return score * 1.5
-    
+
+def subtitute_score(score: float) -> float:
+    return score * 0.5
