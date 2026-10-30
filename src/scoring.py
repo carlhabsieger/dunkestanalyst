@@ -58,6 +58,8 @@ def dunkest_score(b: BoxScore) -> float:
         + _doubles_bonus(b)
         + (1.0 if b.started else 0.0)
     )
+    if b.team_won:
+        score += 0.05 * abs(score)
     return score
 
 
