@@ -1,0 +1,9 @@
+pandas
+numpy
+nba_api
+pulp
+lightgbm
+scikit-learn
+jupyter
+ipykernel
+pytest
