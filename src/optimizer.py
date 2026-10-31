@@ -5,12 +5,14 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import Bounds, LinearConstraint, milp
 
+from src.model.projections import (LOGS_PATH, PROJ_SOURCES, SHRINK_K, LogsNotFoundError,
+                                   build_projections, project_dunkest)
+
 # (guards, forwards, centers) parmi les 5 titulaires : hypothèse G-F-C, à confirmer dans l'app
 FORMATIONS = {"2-2-1": (2, 2, 1), "1-2-2": (1, 2, 2), "2-1-2": (2, 1, 2),
               "1-3-1": (1, 3, 1), "3-1-1": (3, 1, 1)}
 BUDGET = 95.0
 MAX_PER_TEAM = 3
-SHRINK_K = 3
 
 
 def load_snapshot(path=None):
@@ -23,14 +25,8 @@ def load_snapshot(path=None):
 
 
 def project(df):
-    """Projection par match : moyenne de saison tirée vers une valeur attendue selon le prix."""
-    d = df[df.gp > 0].copy()
-    d["avg"] = d.pdk / d.gp          # hypothèse : pdk est un cumul de saison (à vérifier)
-    base = d[d.gp >= 3] if (d.gp >= 3).sum() >= 20 else d
-    slope, inter = np.polyfit(base.cr, base.pdk / base.gp, 1)
-    d["prior"] = inter + slope * d.cr
-    d["proj"] = (d.gp * d.avg + SHRINK_K * d.prior) / (d.gp + SHRINK_K)
-    return d
+    """Ancienne projection (source dunkest : pdk/gp du snapshot), voir src/model/projections.py."""
+    return project_dunkest(df, SHRINK_K)
 
 
 def solve(d, formation, budget, exclude):
@@ -92,10 +88,16 @@ if __name__ == "__main__":
                     help="prix du coach (placeholder, à régler)")
     ap.add_argument("--exclude", default="", help='joueurs déjà pris : "Nom A,Nom B"')
     ap.add_argument("--snapshot", default=None)
+    ap.add_argument("--proj-source", choices=PROJ_SOURCES, default="nba",
+                    help="nba : tous les matchs NBA (logs) ; dunkest : pdk/gp du snapshot (défaut nba)")
+    ap.add_argument("--logs", default=LOGS_PATH, help=f"logs NBA (défaut {LOGS_PATH})")
     a = ap.parse_args()
     exclude = {x.strip().lower() for x in a.exclude.split(",") if x.strip()}
     df, path = load_snapshot(a.snapshot)
-    d = project(df)
+    try:
+        d, gp_label = build_projections(df, a.proj_source, a.logs)
+    except LogsNotFoundError as e:
+        raise SystemExit(str(e))
     budget = BUDGET - a.coach_cost
     print(f"Snapshot : {path} | budget joueurs : {budget:.1f}")
     best = None
@@ -120,6 +122,7 @@ if __name__ == "__main__":
     order = {"capitaine": 0, "titulaire": 1, "6e homme": 2, "banc": 3}
     team = team.sort_values("role", key=lambda s: s.map(order))
     print(f"\nMeilleure formation : {fm} ({val:.1f} pts)")
+    print(f"Projections : source {a.proj_source}")
     print(team[["role", "name", "team_code", "position", "cr", "gp", "proj"]]
-          .round(2).to_string(index=False))
+          .rename(columns={"gp": gp_label}).round(2).to_string(index=False))
     print(f"Coût total : {team.cr.sum():.1f}")

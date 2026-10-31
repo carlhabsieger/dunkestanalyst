@@ -19,7 +19,8 @@ from scipy.optimize import Bounds, LinearConstraint, milp
 from scipy.sparse import csr_array
 
 # Hypothèse NON vérifiée (reprise de src/optimizer.py) : les formations sont (G, F, C) parmi les titulaires.
-from src.optimizer import FORMATIONS, MAX_PER_TEAM, load_snapshot, project
+from src.model.projections import LOGS_PATH, PROJ_SOURCES, LogsNotFoundError, build_projections
+from src.optimizer import FORMATIONS, MAX_PER_TEAM, load_snapshot
 
 POSITIONS = ("G", "F", "C")
 SQUAD_QUOTAS = {"G": 4, "F": 4, "C": 2}
@@ -316,7 +317,7 @@ def solve_buy(pool, slots, credits, owned=None, captain=False, alts=3):
 
 # ---------------------------------------------------------------- CLI
 
-def format_option(k, opt, credits):
+def format_option(k, opt, credits, gp_label="mj"):
     t = opt.table
     out = pd.DataFrame({
         "slot": t.slot,
@@ -325,7 +326,7 @@ def format_option(k, opt, credits):
         "nom": t.name,
         "équipe": t.team_code,
         "prix": t.cr.map(lambda v: f"{v:.1f}"),
-        "mj": t.gp.astype(int) if "gp" in t else "",
+        gp_label: t.gp.astype(int) if "gp" in t else "",
         "proj": t.proj.map(lambda v: f"{v:.1f}"),
         "pts": t.pts.map(lambda v: f"{v:.1f}"),
     })
@@ -343,24 +344,35 @@ def main(argv=None):
                     help='rôle des joueurs possédés : "Nom A:T,Nom B:R" (un nom cité ici est considéré possédé)')
     ap.add_argument("--exclude", default="", help='joueurs pris par des amis, jamais proposés : "Nom C"')
     ap.add_argument("--captain", action="store_true", help="autorise un capitaine (x1,5) parmi les slots T")
-    ap.add_argument("--min-gp", type=int, default=1, help="matchs joués minimum (défaut 1)")
+    ap.add_argument("--min-gp", type=int, default=1,
+                    help="matchs joués minimum, comptés selon --proj-source (défaut 1)")
     ap.add_argument("--alts", type=int, default=3, help="nombre de combinaisons proposées (défaut 3)")
     ap.add_argument("--snapshot", default=None, help="CSV de prix (défaut : le plus récent)")
     ap.add_argument("--find", default=None, help="cherche un joueur par nom (sous-chaîne)")
+    ap.add_argument("--proj-source", choices=PROJ_SOURCES, default="nba",
+                    help="nba : tous les matchs NBA (logs) ; dunkest : pdk/gp du snapshot (défaut nba)")
+    ap.add_argument("--logs", default=LOGS_PATH, help=f"logs NBA (défaut {LOGS_PATH})")
     a = ap.parse_args(argv)
 
     df, path = load_snapshot(a.snapshot)
-    d = project(df)
-    print(f"Snapshot : {path}")
+    print(f"Snapshot : {path} | projections : source {a.proj_source}")
+    try:
+        d, gp_label = build_projections(df, a.proj_source, a.logs)
+    except LogsNotFoundError as e:
+        print(f"Erreur : {e}", file=sys.stderr)
+        return 1
 
     if a.find:
         hit = df[df.name.map(norm).str.contains(norm(a.find), regex=False)]
-        hit = hit.merge(d[["id", "proj"]], on="id", how="left")
+        hit = hit.rename(columns={"gp": "mj Dunkest"})
+        cols = ["id", "proj"] if a.proj_source == "dunkest" else ["id", "gp", "proj"]
+        hit = hit.merge(d[cols].rename(columns={"gp": gp_label}), on="id", how="left")
         if hit.empty:
             print(f"Aucun joueur ne correspond à « {a.find} ».")
         else:
-            print(hit[["name", "team_code", "position", "cr", "gp", "min", "proj"]]
-                  .round(2).to_string(index=False))
+            show = ["name", "team_code", "position", "cr", "mj Dunkest", "min"]
+            show += ([gp_label] if gp_label != "mj Dunkest" else []) + ["proj"]
+            print(hit[show].round(2).to_string(index=False))
         if not a.buy:
             return 0
 
@@ -385,7 +397,7 @@ def main(argv=None):
 
         pool = d[(d.gp >= a.min_gp) & ~d.id.isin(owned.id) & ~d.id.isin(excl.id)]
         print(f"Demande : {', '.join(s.text for s in slots)} | budget {a.credits:.1f} | "
-              f"capitaine : {'oui' if a.captain else 'non'} | {len(pool)} candidats (mj >= {a.min_gp})")
+              f"capitaine : {'oui' if a.captain else 'non'} | {len(pool)} candidats ({gp_label} >= {a.min_gp})")
         if len(owned):
             print("Possédés : " + ", ".join(
                 f"{r['name']} ({r.team_code}, {r.position}"
@@ -398,7 +410,7 @@ def main(argv=None):
 
     for k, opt in enumerate(options, 1):
         print()
-        print(format_option(k, opt, a.credits))
+        print(format_option(k, opt, a.credits, gp_label))
     if len(options) < a.alts:
         print(f"\nSeulement {len(options)} combinaison(s) possible(s).")
     return 0

@@ -1,5 +1,37 @@
 # dunkestanalyst
 
+## Projections (`src/model/projections.py`)
+
+Dunkest ne compte qu'un match par joueur et par journée de jeu (une journée peut durer jusqu'à
+3 nuits) : `gp`, `pdk` et les moyennes du snapshot ne couvrent donc qu'une partie des matchs.
+Par défaut, les projections utilisent TOUS les matchs NBA joués (logs nba_api, score Dunkest
+recalculé par `src/scoring.py`) :
+
+- n = matchs NBA joués (minutes > 0), avg = moyenne du score Dunkest sur ces matchs ;
+- prior = régression linéaire avg ~ prix sur les joueurs à n >= 3 ;
+- proj = (n x avg + k x prior) / (n + k), avec k = `SHRINK_K` = 3 (valeur provisoire).
+
+Les noms du snapshot sont rapprochés de ceux des logs par `normalize_name` (casse, accents et
+ponctuation ignorés, suffixes Jr/II/III conservés). Les joueurs non rapprochés sont listés à chaque
+lancement ; ils reçoivent proj = prior et n = 0, et ne sont donc pas proposés.
+
+```
+python -m src.data.box_scores          # met à jour data/player_logs.csv (requis pour la source nba)
+python -m src.model.compare_proj       # plus grands écarts entre les deux sources, écart moyen par poste
+```
+
+`src/optimizer.py` et `src/buy.py` acceptent `--proj-source nba` (défaut) ou `dunkest` (ancienne
+logique pdk/gp, pour comparaison), et `--logs` pour un autre fichier de logs. Avec la source nba,
+la colonne affichée « matchs NBA » (et le filtre `--min-gp`) porte sur les matchs NBA.
+
+### Limites des projections
+
+- Le score calculé depuis nba_api n'inclut pas le bonus de cinq majeur (+1) ni les contres subis
+  (-0,5) : léger biais pour les titulaires.
+- Le premier match compté par Dunkest peut différer de la moyenne tous matchs (fatigue sur matchs
+  consécutifs) : non mesuré.
+- Les projections ignorent toujours le calendrier et l'injury report ; le coach n'est pas modélisé.
+
 ## Demande précise (`src/buy.py`)
 
 Trouve les meilleurs joueurs à acheter pour quelques places précises de l'équipe, en tenant compte
