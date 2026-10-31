@@ -11,6 +11,8 @@ import unicodedata
 import numpy as np
 import pandas as pd
 
+from src.model.name_aliases import NAME_ALIASES
+
 LOGS_PATH = "data/player_logs.csv"
 SHRINK_K = 3   # valeur provisoire, à remplacer par les coefficients du test early_season
 MIN_FIT_GAMES = 3
@@ -58,19 +60,21 @@ def fit_prior(avg, cr, n):
     return inter + slope * cr
 
 
-def project_all_games(snapshot_df, logs_df, k=SHRINK_K):
+def project_all_games(snapshot_df, logs_df, k=SHRINK_K, aliases=NAME_ALIASES):
     """Ajoute n, avg, prior, proj, matched au snapshot (une ligne par joueur du snapshot).
 
     n = matchs NBA joués (MIN > 0, toutes journées confondues), avg = moyenne DUNKEST sur ces matchs,
     proj = (n*avg + k*prior) / (n + k). Sans correspondance de nom : n = 0, proj = prior, matched = False.
+    aliases : {nom Dunkest: nom NBA}, appliqué avant normalize_name (clés comparées sans accents ni casse).
     """
+    alias_by_key = {normalize_name(a): b for a, b in aliases.items()}
     played = logs_df[logs_df.MIN.fillna(0) > 0]
     agg = (played.assign(key=played.PLAYER_NAME.map(normalize_name))
            .groupby("key").agg(n=("DUNKEST", "size"), avg=("DUNKEST", "mean")))
     all_keys = set(logs_df.PLAYER_NAME.map(normalize_name))
 
     d = snapshot_df.copy()
-    key = d.name.map(normalize_name)
+    key = d.name.map(lambda s: normalize_name(alias_by_key.get(normalize_name(s), s)))
     d["matched"] = key.isin(all_keys)
     d["n"] = key.map(agg.n).fillna(0).astype(int)
     d["avg"] = key.map(agg.avg)

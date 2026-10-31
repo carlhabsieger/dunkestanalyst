@@ -94,3 +94,14 @@ def test_logs_absents_message_clair(tmp_path, capsys):
     assert compare_proj.main(["--snapshot", str(sp), "--logs", missing]) == 1
     err = capsys.readouterr().err
     assert err.count("python -m src.data.box_scores") == 2 and "Traceback" not in err
+
+
+def test_alias_dunkest_vers_nba():
+    snap, logs = make_data()
+    snap = pd.concat([snap, pd.DataFrame([{"id": 200, "name": "Bobby Portis", "team_code": "MIA",
+                                           "position": "F", "cr": 8.1, "gp": 4, "pdk": 80.0}])])
+    logs = pd.concat([logs, pd.DataFrame(_logs_rows(200, "Bobby Portis Jr.", [20, 22, 18, 25, 21]))])
+    j = project_all_games(snap, logs).set_index("id").loc[200]          # table NAME_ALIASES par défaut
+    assert j.matched and j.n == 5 and j.avg == pytest.approx(21.2)
+    sans = project_all_games(snap, logs, aliases={}).set_index("id").loc[200]
+    assert not sans.matched and sans.n == 0                             # le suffixe n'est pas supprimé
