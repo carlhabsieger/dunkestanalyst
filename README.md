@@ -19,7 +19,11 @@ lancement ; ils reçoivent proj = prior et n = 0, et ne sont donc pas proposés.
 ```
 python -m src.data.box_scores          # met à jour data/player_logs.csv (requis pour la source nba)
 python -m src.model.compare_proj       # plus grands écarts entre les deux sources, écart moyen par poste
+python -m src.model.compare_proj --prior price_min   # expérience : a priori prix + minutes/match
 ```
+
+`--prior price_min` n'est branché nulle part ailleurs : il est ajusté sur les mêmes joueurs que ceux
+projetés et ne prouve pas qu'il prédit mieux que l'a priori prix seul.
 
 `src/optimizer.py` et `src/buy.py` acceptent `--proj-source nba` (défaut) ou `dunkest` (ancienne
 logique pdk/gp, pour comparaison), et `--logs` pour un autre fichier de logs. Avec la source nba,
