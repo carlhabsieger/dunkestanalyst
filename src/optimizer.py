@@ -100,15 +100,12 @@ if __name__ == "__main__":
         raise SystemExit(str(e))
     budget = BUDGET - a.coach_cost
     print(f"Snapshot : {path} | budget joueurs : {budget:.1f}")
-    best = None
-    for fm in FORMATIONS:
+    results = {}
+    for fm in FORMATIONS:                    # une seule résolution par formation
         r = solve(d, fm, budget, exclude)
         if r:
             print(f"  {fm} : {r[0]:.1f} pts attendus (hors coach)")
-            if best is None or r[0] > best[0]:
-                best = (r[0], fm, r[1])
-        results = {fm: solve(d, fm, budget, exclude) for fm in FORMATIONS}
-    results = {k: v for k, v in results.items() if v}
+            results[fm] = r
     if not results:
         raise SystemExit("Aucune équipe valide : budget trop bas ou trop de joueurs exclus.")
     best_fm = max(results, key=lambda k: results[k][0])
