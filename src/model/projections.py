@@ -14,7 +14,7 @@ import pandas as pd
 from src.model.name_aliases import NAME_ALIASES
 
 LOGS_PATH = "data/player_logs.csv"
-SHRINK_K = 3   # valeur provisoire, à remplacer par les coefficients du test early_season
+SHRINK_K = 4   # calibré sur early_season : coefficient du score 0,51 sur 4 matchs, soit k voisin de 4
 MIN_FIT_GAMES = 3
 MIN_FIT_PLAYERS = 20
 PROJ_SOURCES = ("nba", "dunkest")

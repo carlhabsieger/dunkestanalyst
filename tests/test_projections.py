@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from src.model.projections import (LogsNotFoundError, load_logs, normalize_name,
+from src.model.projections import (SHRINK_K, LogsNotFoundError, load_logs, normalize_name,
                                    project_all_games)
 
 
@@ -49,7 +49,7 @@ def test_tous_les_matchs_comptes():
     j = d.loc[100]
     assert j.matched and j.n == 6 and j.gp == 5
     assert j.avg == pytest.approx(sum([50, 52, 48, 60, 30, 46]) / 6)
-    assert j.proj == pytest.approx((6 * j.avg + 3 * j.prior) / (6 + 3))
+    assert j.proj == pytest.approx((6 * j.avg + SHRINK_K * j.prior) / (6 + SHRINK_K))
 
 
 def test_joueur_absent_recoit_le_prior():
@@ -66,8 +66,9 @@ def test_lissage_plus_fort_avec_peu_de_matchs():
     assert short.prior == pytest.approx(long_.prior) and short.avg == long_.avg == 40
     assert short.prior < short.proj < long_.proj < 40
     # Part de l'écart au prior conservée : n / (n + k)
-    assert (short.proj - short.prior) / (40 - short.prior) == pytest.approx(2 / 5)
-    assert (long_.proj - long_.prior) / (40 - long_.prior) == pytest.approx(20 / 23)
+    assert SHRINK_K == 4
+    assert (short.proj - short.prior) / (40 - short.prior) == pytest.approx(2 / (2 + SHRINK_K))
+    assert (long_.proj - long_.prior) / (40 - long_.prior) == pytest.approx(20 / (20 + SHRINK_K))
 
 
 def test_load_logs_dedoublonne(tmp_path):

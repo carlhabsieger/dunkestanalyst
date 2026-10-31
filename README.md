@@ -9,7 +9,8 @@ recalculé par `src/scoring.py`) :
 
 - n = matchs NBA joués (minutes > 0), avg = moyenne du score Dunkest sur ces matchs ;
 - prior = régression linéaire avg ~ prix sur les joueurs à n >= 3 ;
-- proj = (n x avg + k x prior) / (n + k), avec k = `SHRINK_K` = 3 (valeur provisoire).
+- proj = (n x avg + k x prior) / (n + k), avec k = `SHRINK_K` = 4 (calibré sur `early_season` : coefficient
+  0,51 sur 4 matchs, soit 4 / (4 + k) = 0,51).
 
 Les noms du snapshot sont rapprochés de ceux des logs par `normalize_name` (casse, accents et
 ponctuation ignorés, suffixes Jr/II/III conservés). Les joueurs non rapprochés sont listés à chaque
