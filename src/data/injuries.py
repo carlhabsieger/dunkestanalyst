@@ -8,6 +8,7 @@ import os
 import shutil
 import sys
 import time
+import warnings
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -87,15 +88,66 @@ def fetch_latest_report(now=None, tries=MAX_TRIES, pause=PAUSE_S, check=None, ge
                             f"(depuis {times[-1]:%Y-%m-%d %H:%M} ET).")
 
 
+def team_code(full_name):
+    """ "Boston Celtics" -> "BOS" (table statique nba_api, sans réseau) ; None si inconnu."""
+    global _TEAM_CODES
+    if _TEAM_CODES is None:
+        from nba_api.stats.static import teams
+        _TEAM_CODES = {t["full_name"]: t["abbreviation"] for t in teams.get_teams()}
+        _TEAM_CODES.update(TEAM_NAME_EXTRA)
+    return _TEAM_CODES.get(" ".join(str(full_name).split()))
+
+
+_TEAM_CODES = None
+TEAM_NAME_EXTRA = {"LA Clippers": "LAC"}   # le rapport écrit « LA Clippers », nba_api « Los Angeles Clippers »
+
+
 def clean_report(df):
-    """Colonnes attendues, lignes sans joueur retirées (équipes « NOT YET SUBMITTED »), nom Dunkest ajouté."""
+    """Colonnes attendues, nom Dunkest, code équipe et date de match ajoutés.
+
+    Les lignes « NOT YET SUBMITTED » (équipe sans joueur) sont gardées avec not_submitted = True.
+    Remarque : la colonne Game Time de la source n'a pas d'AM/PM (« 07:30 (ET) » pour 19 h 30) ;
+    elle n'est pas utilisée, l'heure vient du calendrier (src/data/schedule.py).
+    """
     missing = [c for c in COLS if c not in df.columns]
     if missing:
         raise InjuryReportError(f"Format de rapport inattendu, colonnes absentes : {missing}.")
-    out = df[COLS].dropna(subset=["Player Name"]).copy()
-    out["Current Status"] = out["Current Status"].astype(str).str.strip()
-    out["dunkest_name"] = out["Player Name"].map(to_dunkest_name)
+    out = df[COLS].copy()
+    out["not_submitted"] = out.Reason.astype(str).str.upper().str.contains("NOT YET SUBMITTED")
+    out = out[out["Player Name"].notna() | out.not_submitted].copy()
+    out["Current Status"] = out["Current Status"].where(out["Current Status"].isna(),
+                                                        out["Current Status"].astype(str).str.strip())
+    out["dunkest_name"] = out["Player Name"].map(to_dunkest_name, na_action="ignore")
+    out["team_code"] = out.Team.map(team_code)
+    out["game_date"] = pd.to_datetime(out["Game Date"], format="%m/%d/%Y", errors="coerce").dt.date
+    unknown = sorted(out.loc[out.team_code.isna(), "Team"].astype(str).unique())
+    if unknown:
+        warnings.warn(f"Équipe(s) du rapport sans code connu : {', '.join(unknown)}", stacklevel=2)
     return out.reset_index(drop=True)
+
+
+def players_rows(report):
+    """Lignes joueurs seulement (sans les « NOT YET SUBMITTED »)."""
+    return report[~report.not_submitted]
+
+
+def restrict_dates(report, dates):
+    """Lignes du rapport dont le match tombe à l'une des dates (toutes si dates est vide)."""
+    return report if not dates else report[report.game_date.isin(set(dates))]
+
+
+def report_teams(report):
+    """(teams_in_report, teams_not_submitted) en codes équipe.
+
+    Hypothèse : une équipe peut avoir soumis pour un match et pas pour le suivant ; on juge sur
+    son premier match présent dans le rapport (déjà restreint aux dates demandées le cas échéant).
+    """
+    r = report.dropna(subset=["team_code"])
+    teams_in = set(r.team_code)
+    first = r.groupby("team_code").game_date.transform("min")
+    first_game = r[r.game_date == first]
+    teams_ns = set(first_game.loc[first_game.not_submitted, "team_code"])
+    return teams_in, teams_ns
 
 
 def save_report(df, t_et, path=REPORT_PATH):
@@ -117,7 +169,9 @@ def get_report(path=REPORT_PATH, verbose=True):
     t, df = fetch_latest_report()
     save_report(df, t, path)
     if verbose:
-        print(f"Rapport blessures : {report_age_line(t)} | {len(df)} joueurs listés")
+        _, ns = report_teams(df)
+        print(f"Rapport blessures : {report_age_line(t)} | {len(players_rows(df))} joueurs listés, "
+              f"{len(ns)} équipe(s) au premier match sans rapport soumis")
     return t, df
 
 
@@ -129,7 +183,14 @@ def main():
         return 1
     print(f"Sauvegardé dans {REPORT_PATH}")
     print("\nStatuts rencontrés :")
-    print(df["Current Status"].value_counts().to_string())
+    print(players_rows(df)["Current Status"].value_counts().to_string())
+    teams_in, teams_ns = report_teams(df)
+    print(f"\nÉquipes dans le rapport : {len(teams_in)} | premier match non soumis : "
+          f"{', '.join(sorted(teams_ns)) or 'aucune'}")
+    nys = df[df.not_submitted]
+    if len(nys):
+        print("Lignes NOT YET SUBMITTED par date : "
+              + ", ".join(f"{d} : {n}" for d, n in nys.groupby("game_date").size().items()))
     try:                                     # rapprochement avec le dernier snapshot, s'il existe
         from src.model.projections import injury_match_report, match_injuries
         from src.optimizer import load_snapshot
@@ -138,7 +199,7 @@ def main():
         return 0
     _, _, unmatched = match_injuries(snap, df)
     print(f"\nRapprochement avec {path} :")
-    print(injury_match_report(unmatched, len(df), top=None))
+    print(injury_match_report(unmatched, len(players_rows(df)), top=None))
     return 0
 
 
