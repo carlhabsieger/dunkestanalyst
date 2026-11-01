@@ -11,6 +11,8 @@ import unicodedata
 import numpy as np
 import pandas as pd
 
+from src.data.injuries import to_dunkest_name
+from src.model.injury_probs import NOT_LISTED, OUT, p_play_for
 from src.model.name_aliases import NAME_ALIASES
 
 LOGS_PATH = "data/player_logs.csv"
@@ -60,6 +62,12 @@ def fit_prior(avg, cr, n):
     return inter + slope * cr
 
 
+def dunkest_keys(names, aliases=NAME_ALIASES):
+    """Clés de rapprochement des noms Dunkest : alias (nom Dunkest -> nom NBA) puis normalize_name."""
+    alias_by_key = {normalize_name(a): b for a, b in aliases.items()}
+    return names.map(lambda s: normalize_name(alias_by_key.get(normalize_name(s), s)))
+
+
 def project_all_games(snapshot_df, logs_df, k=SHRINK_K, aliases=NAME_ALIASES):
     """Ajoute n, avg, mpg, prior, proj, matched au snapshot (une ligne par joueur du snapshot).
 
@@ -68,14 +76,13 @@ def project_all_games(snapshot_df, logs_df, k=SHRINK_K, aliases=NAME_ALIASES):
     proj = (n*avg + k*prior) / (n + k). Sans correspondance de nom : n = 0, proj = prior, matched = False.
     aliases : {nom Dunkest: nom NBA}, appliqué avant normalize_name (clés comparées sans accents ni casse).
     """
-    alias_by_key = {normalize_name(a): b for a, b in aliases.items()}
     played = logs_df[logs_df.MIN.fillna(0) > 0]
     agg = (played.assign(key=played.PLAYER_NAME.map(normalize_name))
            .groupby("key").agg(n=("DUNKEST", "size"), avg=("DUNKEST", "mean"), mpg=("MIN", "mean")))
     all_keys = set(logs_df.PLAYER_NAME.map(normalize_name))
 
     d = snapshot_df.copy()
-    key = d.name.map(lambda s: normalize_name(alias_by_key.get(normalize_name(s), s)))
+    key = dunkest_keys(d.name, aliases)
     d["matched"] = key.isin(all_keys)
     d["n"] = key.map(agg.n).fillna(0).astype(int)
     d["avg"] = key.map(agg.avg)
@@ -110,18 +117,76 @@ def match_report(d, top=15):
     return "\n".join(lines)
 
 
-def build_projections(df, source="nba", logs_path=LOGS_PATH, verbose=True):
+def match_injuries(d, report, aliases=NAME_ALIASES):
+    """Statut et motif du rapport pour chaque joueur de d (rapprochement normalize_name + alias).
+
+    Retourne (status, reason) alignés sur d.index ("non listé" / "" si absent du rapport), et les
+    lignes du rapport sans joueur Dunkest correspondant. Hypothèse : si un joueur figure plusieurs
+    fois (plusieurs matchs), on garde sa première ligne, le rapport étant trié par match.
+    """
+    rep = report.assign(key=report["Player Name"].map(to_dunkest_name).map(normalize_name))
+    first = rep.drop_duplicates("key").set_index("key")
+    key = dunkest_keys(d.name, aliases)
+    status = key.map(first["Current Status"]).fillna(NOT_LISTED)
+    reason = key.map(first["Reason"]).fillna("")
+    unmatched = rep[~rep.key.isin(set(key))].drop(columns="key")
+    return status, reason, unmatched
+
+
+def apply_injuries(d, report, aliases=NAME_ALIASES):
+    """Ajoute status, reason, p_play, proj_if_play (ancienne proj) et proj = p_play * proj_if_play.
+
+    Retourne (d, lignes du rapport non rapprochées). Un statut inconnu reçoit 0,5 (avertissement).
+    """
+    status, reason, unmatched = match_injuries(d, report, aliases)
+    d = d.assign(status=status, reason=reason, p_play=p_play_for(status), proj_if_play=d.proj)
+    d["proj"] = d.p_play * d.proj_if_play
+    return d, unmatched
+
+
+def filter_available(d, min_p_play=0.0):
+    """Candidats : sans les joueurs Out (toujours) ni ceux dont p_play < min_p_play."""
+    if "status" not in d:
+        return d
+    return d[(d.status != OUT) & (d.p_play >= min_p_play)].copy()
+
+
+def injury_match_report(unmatched, n_report, top=15):
+    """Joueurs du rapport sans correspondance Dunkest (équipe sans joueur Dunkest ou nom différent)."""
+    lines = [f"Rapprochement rapport blessures / Dunkest : {n_report - len(unmatched)} joueurs rapprochés, "
+             f"{len(unmatched)} non rapprochés (absents de Dunkest ou nom différent)."]
+    shown = unmatched if top is None else unmatched.head(top)
+    lines += [f"  {r['Player Name']} ({r.Team}, {r['Current Status']})" for _, r in shown.iterrows()]
+    if len(shown) < len(unmatched):
+        lines.append(f"  ... et {len(unmatched) - len(shown)} autres (python -m src.data.injuries pour tout voir)")
+    return "\n".join(lines)
+
+
+def build_projections(df, source="nba", logs_path=LOGS_PATH, verbose=True, injuries=None):
     """Projections pour les CLI. Retourne (d, gp_label).
 
     source "nba" : la colonne gp vaut n (matchs NBA), l'ancienne valeur passe dans gp_dunkest.
     Seuls les joueurs ayant au moins un match sont conservés, comme dans l'ancienne project().
+    injuries : DataFrame du rapport (src.data.injuries), fonction sans argument qui le renvoie
+    (appelée après le chargement des logs, donc pas de réseau si les logs manquent), ou None.
+    Les candidats se filtrent ensuite avec filter_available.
     """
     if source == "dunkest":
-        return project_dunkest(df), "mj Dunkest"
-    if source != "nba":
+        d, gp_label = project_dunkest(df), "mj Dunkest"
+    elif source == "nba":
+        d = project_all_games(df, load_logs(logs_path))
+        if verbose:
+            print(match_report(d))
+        d = d.assign(gp_dunkest=d.gp, gp=d.n)
+        d, gp_label = d[d.gp > 0].copy(), "matchs NBA"
+    else:
         raise ValueError(f"Source de projection inconnue : {source} (attendu : {', '.join(PROJ_SOURCES)}).")
-    d = project_all_games(df, load_logs(logs_path))
-    if verbose:
-        print(match_report(d))
-    d = d.assign(gp_dunkest=d.gp, gp=d.n)
-    return d[d.gp > 0].copy(), "matchs NBA"
+    if callable(injuries):
+        injuries = injuries()
+    if injuries is not None:
+        d, _ = apply_injuries(d, injuries)
+        # Non rapprochés calculés sur tout le snapshot : un blessé sans match NBA reste « rapproché ».
+        _, _, unmatched = match_injuries(df, injuries)
+        if verbose:
+            print(injury_match_report(unmatched, len(injuries)))
+    return d, gp_label

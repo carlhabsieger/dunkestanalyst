@@ -37,6 +37,39 @@ la colonne affichée « matchs NBA » (et le filtre `--min-gp`) porte sur les ma
   consécutifs) : non mesuré.
 - Les projections ignorent toujours le calendrier et l'injury report ; le coach n'est pas modélisé.
 
+## Blessures (`src/data/injuries.py`, `src/model/injury_probs.py`)
+
+Le rapport officiel des blessures NBA (package `nbainjuries`) est lu à chaque lancement de
+l'optimiseur et de `buy.py` : on remonte d'heure en heure (heure de l'Est, au plus 36 essais)
+jusqu'au dernier rapport publié, sauvegardé dans `data/injuries_latest.csv`. L'heure du rapport
+(ET et Paris) et son ancienneté sont affichées.
+
+Chaque statut donne une probabilité de jouer (`STATUS_P_PLAY`) : Out 0, Doubtful 0,15,
+Questionable 0,5, Probable 0,85, Available 1. Un statut inconnu reçoit 0,5 avec un avertissement ;
+un joueur absent du rapport est « non listé » (p = 1). La projection devient
+proj = p_play x proj_if_play.
+
+```
+python -m src.data.injuries                         # dernier rapport, statuts, non rapprochés
+python -m src.optimizer --coach-cost 9              # blessures prises en compte (défaut --injuries on)
+python -m src.buy --buy "T:G@8-12" --credits 12 --min-p-play 0.6
+```
+
+- `--injuries on|off` (défaut on) : avec on, les joueurs Out ne sont jamais proposés. Si le rapport
+  est introuvable, l'outil s'arrête et propose `--injuries off` (pas de bascule silencieuse).
+- `--min-p-play` (défaut 0) : exclut les candidats dont la probabilité de jouer est sous le seuil.
+
+### Limites des blessures
+
+- Les probabilités par statut sont provisoires (non calibrées sur l'historique des rapports).
+- L'espérance p x proj ignore la possibilité de remplacer un titulaire absent entre deux tours.
+- Le rapport est mis à jour tard dans la journée, et le marché Dunkest peut fermer avant les statuts
+  finaux.
+- Le rapport ne couvre que les matchs à venir proches : un joueur dont l'équipe ne joue pas est
+  « non listé » (p = 1).
+- La répartition des minutes des coéquipiers d'un absent n'est pas encore modélisée.
+- Java est requis (lecture du PDF par tabula) : `sudo apt install default-jre`.
+
 ## Demande précise (`src/buy.py`)
 
 Trouve les meilleurs joueurs à acheter pour quelques places précises de l'équipe, en tenant compte

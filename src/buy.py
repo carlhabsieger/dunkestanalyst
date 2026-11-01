@@ -19,7 +19,11 @@ from scipy.optimize import Bounds, LinearConstraint, milp
 from scipy.sparse import csr_array
 
 # Hypothèse NON vérifiée (reprise de src/optimizer.py) : les formations sont (G, F, C) parmi les titulaires.
-from src.model.projections import LOGS_PATH, PROJ_SOURCES, LogsNotFoundError, build_projections
+import warnings
+
+from src.data.injuries import InjuryReportError, get_report
+from src.model.projections import (LOGS_PATH, PROJ_SOURCES, LogsNotFoundError, build_projections,
+                                   filter_available)
 from src.optimizer import FORMATIONS, MAX_PER_TEAM, load_snapshot
 
 POSITIONS = ("G", "F", "C")
@@ -324,6 +328,7 @@ def format_option(k, opt, credits, gp_label="mj"):
         "rôle": [ROLE_LABEL[r] + (" (CAP)" if cap else "") for r, cap in zip(t.role, t.captain)],
         "poste": t.position,
         "nom": t.name,
+        **({"statut": t.status, "p_play": t.p_play.map(lambda v: f"{v:.2f}")} if "status" in t else {}),
         "équipe": t.team_code,
         "prix": t.cr.map(lambda v: f"{v:.1f}"),
         gp_label: t.gp.astype(int) if "gp" in t else "",
@@ -352,14 +357,24 @@ def main(argv=None):
     ap.add_argument("--proj-source", choices=PROJ_SOURCES, default="nba",
                     help="nba : tous les matchs NBA (logs) ; dunkest : pdk/gp du snapshot (défaut nba)")
     ap.add_argument("--logs", default=LOGS_PATH, help=f"logs NBA (défaut {LOGS_PATH})")
+    ap.add_argument("--injuries", choices=("on", "off"), default="on",
+                    help="rapport officiel des blessures : proj = p_play x proj, Out exclus (défaut on)")
+    ap.add_argument("--min-p-play", type=float, default=0.0,
+                    help="exclut les candidats dont la probabilité de jouer est sous ce seuil (défaut 0)")
     a = ap.parse_args(argv)
 
     df, path = load_snapshot(a.snapshot)
-    print(f"Snapshot : {path} | projections : source {a.proj_source}")
+    print(f"Snapshot : {path} | projections : source {a.proj_source} | blessures : {a.injuries}")
+    warnings.formatwarning = lambda msg, *args, **kw: f"Attention : {msg}\n"
+    report = (lambda: get_report()[1]) if a.injuries == "on" else None
     try:
-        d, gp_label = build_projections(df, a.proj_source, a.logs)
+        d, gp_label = build_projections(df, a.proj_source, a.logs, injuries=report)
     except LogsNotFoundError as e:
         print(f"Erreur : {e}", file=sys.stderr)
+        return 1
+    except InjuryReportError as e:
+        print(f"Erreur : rapport des blessures introuvable : {e}\n"
+              f"Relance avec --injuries off pour ignorer les blessures.", file=sys.stderr)
         return 1
 
     if a.find:
@@ -371,7 +386,11 @@ def main(argv=None):
             print(f"Aucun joueur ne correspond à « {a.find} ».")
         else:
             show = ["name", "team_code", "position", "cr", "mj Dunkest", "min"]
-            show += ([gp_label] if gp_label != "mj Dunkest" else []) + ["proj"]
+            show += ([gp_label] if gp_label != "mj Dunkest" else [])
+            if "status" in d:
+                hit = hit.merge(d[["id", "status", "p_play"]], on="id", how="left")
+                show += ["status", "p_play"]
+            show += ["proj"]
             print(hit[show].round(2).to_string(index=False))
         if not a.buy:
             return 0
@@ -395,7 +414,8 @@ def main(argv=None):
         for nm in missing_ex:
             print(f"Attention : joueur exclu introuvable, ignoré : {nm}", file=sys.stderr)
 
-        pool = d[(d.gp >= a.min_gp) & ~d.id.isin(owned.id) & ~d.id.isin(excl.id)]
+        avail = filter_available(d, a.min_p_play)          # Out toujours exclus si --injuries on
+        pool = avail[(avail.gp >= a.min_gp) & ~avail.id.isin(owned.id) & ~avail.id.isin(excl.id)]
         print(f"Demande : {', '.join(s.text for s in slots)} | budget {a.credits:.1f} | "
               f"capitaine : {'oui' if a.captain else 'non'} | {len(pool)} candidats ({gp_label} >= {a.min_gp})")
         if len(owned):

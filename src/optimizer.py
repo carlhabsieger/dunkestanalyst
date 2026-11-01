@@ -5,8 +5,11 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import Bounds, LinearConstraint, milp
 
+import warnings
+
+from src.data.injuries import InjuryReportError, get_report
 from src.model.projections import (LOGS_PATH, PROJ_SOURCES, SHRINK_K, LogsNotFoundError,
-                                   build_projections, project_dunkest)
+                                   build_projections, filter_available, project_dunkest)
 
 # (guards, forwards, centers) parmi les 5 titulaires : hypothèse G-F-C, à confirmer dans l'app
 FORMATIONS = {"2-2-1": (2, 2, 1), "1-2-2": (1, 2, 2), "2-1-2": (2, 1, 2),
@@ -91,13 +94,23 @@ if __name__ == "__main__":
     ap.add_argument("--proj-source", choices=PROJ_SOURCES, default="nba",
                     help="nba : tous les matchs NBA (logs) ; dunkest : pdk/gp du snapshot (défaut nba)")
     ap.add_argument("--logs", default=LOGS_PATH, help=f"logs NBA (défaut {LOGS_PATH})")
+    ap.add_argument("--injuries", choices=("on", "off"), default="on",
+                    help="rapport officiel des blessures : proj = p_play x proj, Out exclus (défaut on)")
+    ap.add_argument("--min-p-play", type=float, default=0.0,
+                    help="exclut les candidats dont la probabilité de jouer est sous ce seuil (défaut 0)")
     a = ap.parse_args()
     exclude = {x.strip().lower() for x in a.exclude.split(",") if x.strip()}
     df, path = load_snapshot(a.snapshot)
+    warnings.formatwarning = lambda msg, *args, **kw: f"Attention : {msg}\n"
+    report = (lambda: get_report()[1]) if a.injuries == "on" else None
     try:
-        d, gp_label = build_projections(df, a.proj_source, a.logs)
+        d, gp_label = build_projections(df, a.proj_source, a.logs, injuries=report)
     except LogsNotFoundError as e:
         raise SystemExit(str(e))
+    except InjuryReportError as e:
+        raise SystemExit(f"Rapport des blessures introuvable : {e}\n"
+                         f"Relance avec --injuries off pour ignorer les blessures.")
+    d = filter_available(d, a.min_p_play)
     budget = BUDGET - a.coach_cost
     print(f"Snapshot : {path} | budget joueurs : {budget:.1f}")
     results = {}
@@ -119,7 +132,9 @@ if __name__ == "__main__":
     order = {"capitaine": 0, "titulaire": 1, "6e homme": 2, "banc": 3}
     team = team.sort_values("role", key=lambda s: s.map(order))
     print(f"\nMeilleure formation : {fm} ({val:.1f} pts)")
-    print(f"Projections : source {a.proj_source}")
-    print(team[["role", "name", "team_code", "position", "cr", "gp", "proj"]]
-          .rename(columns={"gp": gp_label}).round(2).to_string(index=False))
+    print(f"Projections : source {a.proj_source} | blessures : {a.injuries}"
+          + (" (proj = p_play x proj si joue)" if a.injuries == "on" else ""))
+    cols = ["role", "name"] + (["status", "p_play"] if "status" in team else []) + \
+        ["team_code", "position", "cr", "gp", "proj"]
+    print(team[cols].rename(columns={"gp": gp_label, "status": "statut"}).round(2).to_string(index=False))
     print(f"Coût total : {team.cr.sum():.1f}")
