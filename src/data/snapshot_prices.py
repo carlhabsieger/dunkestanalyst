@@ -18,15 +18,20 @@ H = {"User-Agent": "Mozilla/5.0 (usage personnel, 1 requête/jour)",
 
 
 def get_state():
+    """(journée, tour, statut, nombre de tours de la journée, début du tour en ISO UTC).
+
+    num_rounds et started_at peuvent manquer si l'API change : None, sans faire échouer le snapshot.
+    """
     r = requests.get(CONFIG, headers=H, timeout=30)
     r.raise_for_status()
     d = r.json()["data"]
     return (d["current_matchday"]["number"], d["current_round"]["number"],
-            d["status_id"])
+            d["status_id"], d["current_matchday"].get("num_rounds"),
+            d["current_round"].get("started_at"))
 
 
 def main():
-    matchday, rnd, status = get_state()
+    matchday, rnd, status, num_rounds, round_started_at = get_state()
     params = [("season_id", SEASON), ("mode", "dunkest"), ("stats_type", "tot"),
               ("min_cr", "4"), ("max_cr", "35"), ("sort_by", "pdk"),
               ("sort_order", "desc"), ("iframe", "yes")]
@@ -45,6 +50,9 @@ def main():
     df.insert(1, "matchday", matchday)
     df.insert(2, "round", rnd)
     df.insert(3, "status_id", status)
+    # Ajoutées à la fin pour ne pas déplacer les colonnes existantes (anciens fichiers sans elles).
+    df["num_rounds"] = num_rounds
+    df["round_started_at"] = round_started_at
     os.makedirs("snapshots", exist_ok=True)
     path = f"snapshots/prices_{now:%Y-%m-%d}.csv"
     df.to_csv(path, index=False)
