@@ -6,9 +6,10 @@ import pytest
 from src.data import injuries as inj
 from src.data.injuries import (ET, InjuryReportError, clean_report, fetch_latest_report,
                                report_age_line, report_teams, team_code, to_dunkest_name)
-from src.data.schedule import ScheduleError, fetch_schedule, match_labels, parse_dates
+from src.data.schedule import ScheduleError, fetch_schedule, first_game_dates, match_labels, parse_dates
 from src.model.injury_probs import NOT_LISTED, NOT_SUBMITTED, OUT_OF_REPORT, UnknownStatusWarning
-from src.model.projections import apply_injuries, attach_matches, filter_available, uncertain_mark
+from src.model.projections import (apply_injuries, attach_matches, filter_available, short_reason,
+                                   uncertain_mark)
 
 
 def test_to_dunkest_name():
@@ -189,7 +190,7 @@ def test_calendrier_equipes_et_adversaires():
     assert labels == {"BOS": "02/11 @HOU 8:30 pm ET", "HOU": "02/11 vs BOS 8:30 pm ET",
                       "MIA": "02/11 @LAL 10:00 pm ET", "LAL": "02/11 vs MIA 10:00 pm ET"}
     both = match_labels(s, [date(2026, 11, 1), date(2026, 11, 2)])
-    assert both["BOS"] == "01/11 @ORL 3:30 pm ET ; 02/11 @HOU 8:30 pm ET"
+    assert both["BOS"] == "01/11 @ORL 3:30 pm ET (+1 match non compté)"     # seul le 1er match compte
     d = pd.DataFrame({"name": ["A", "B", "C"], "team_code": ["BOS", "ORL", "LAL"]})
     kept = attach_matches(d, labels)
     assert kept.name.tolist() == ["A", "C"] and kept.match.tolist()[0] == "02/11 @HOU 8:30 pm ET"
@@ -228,5 +229,44 @@ def test_statut_anterieur_conserve_avec_dates():
                       "proj": [30.0, 10.0]})
     out = apply_injuries(d, rep, dates=[date(2026, 11, 2)])[0].set_index("name")
     assert out.loc["Paolo Banchero", "status"] == "Out" and out.loc["Paolo Banchero", "proj"] == 0.0
-    assert out.loc["Paolo Banchero", "reason"].startswith("[statut du 01/11]")
+    assert out.loc["Paolo Banchero", "reason"].startswith("[statut du 01/11, 1 j avant]")
+    assert out.loc["Paolo Banchero", "status_age_days"] == 1
     assert out.loc["Autre Orl", "status"] == NOT_SUBMITTED
+
+
+# ------------------------------------------------ règle Dunkest : premier match de la fenêtre
+
+def test_equipe_qui_joue_deux_fois_dans_la_fenetre():
+    raw = pd.DataFrame({
+        "gameDate": ["11/04/2026 00:00:00", "11/05/2026 00:00:00", "11/05/2026 00:00:00"],
+        "awayTeam_teamTricode": ["BOS", "MIA", "LAL"], "homeTeam_teamTricode": ["NYK", "BOS", "ORL"],
+        "gameStatusText": ["7:30 pm ET", "7:00 pm ET", "7:00 pm ET"]})
+    s = fetch_schedule(fetch=lambda season: raw, path=None)
+    dates = [date(2026, 11, 4), date(2026, 11, 5)]
+    labels = match_labels(s, dates)
+    assert labels["BOS"] == "04/11 @NYK 7:30 pm ET (+1 match non compté)"
+    assert labels["ORL"] == "05/11 vs LAL 7:00 pm ET"
+    fg = first_game_dates(s, dates)
+    assert fg["BOS"] == date(2026, 11, 4) and fg["ORL"] == date(2026, 11, 5)
+
+    # Rapport : BOS a soumis pour le 04/11 (Joueur Un Questionable) ; Joueur Deux n'est listé (Out)
+    # que pour le 2e match du 05/11, qui ne compte pas ; Joueur Un est Out le 05/11, ignoré aussi.
+    rep = pd.concat([
+        report([("Un, Joueur", "Questionable")], date="11/04/2026"),
+        report([("Un, Joueur", "Out"), ("Deux, Joueur", "Out")], date="11/05/2026"),
+    ], ignore_index=True)
+    d = pd.DataFrame({"id": [1, 2], "name": ["Joueur Un", "Joueur Deux"], "team_code": ["BOS", "BOS"],
+                      "proj": [20.0, 30.0]})
+    out = apply_injuries(d, rep, dates=dates, first_games=fg)[0].set_index("name")
+    assert out.loc["Joueur Un", "status"] == "Questionable" and out.loc["Joueur Un", "proj"] == 10.0
+    assert out.loc["Joueur Deux", "status"] == NOT_LISTED and out.loc["Joueur Deux", "proj"] == 30.0
+    kept = attach_matches(out.reset_index(), labels)
+    assert set(kept.match) == {"04/11 @NYK 7:30 pm ET (+1 match non compté)"}
+
+
+def test_age_du_statut_anterieur():
+    rep = report([("Banchero, Paolo", "Out")], team="Orlando Magic")           # match du 01/11
+    d = pd.DataFrame({"id": [1], "name": ["Paolo Banchero"], "team_code": ["ORL"], "proj": [30.0]})
+    out = apply_injuries(d, rep, dates=[date(2026, 11, 4)], first_games={"ORL": date(2026, 11, 4)})[0]
+    assert out.status.iloc[0] == "Out" and out.status_age_days.iloc[0] == 3
+    assert short_reason(out.reason.iloc[0]).startswith("[statut du 01/11, 3 j avant] Test")

@@ -197,7 +197,7 @@ def main():
         snap, path = load_snapshot()
     except (IndexError, FileNotFoundError):
         return 0
-    _, _, unmatched = match_injuries(snap, df)
+    _, unmatched = match_injuries(snap, df)
     print(f"\nRapprochement avec {path} :")
     print(injury_match_report(unmatched, len(players_rows(df)), top=None))
     return 0

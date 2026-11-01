@@ -8,10 +8,11 @@ from scipy.optimize import Bounds, LinearConstraint, milp
 import warnings
 
 from src.data.injuries import InjuryReportError, get_report
-from src.data.schedule import ScheduleError, fetch_schedule, match_labels, parse_dates
+from src.data.schedule import ScheduleError, fetch_schedule, first_game_dates, match_labels, parse_dates
 from src.model.injury_probs import DEFAULT_UNKNOWN_P, is_uncertain
 from src.model.projections import (LOGS_PATH, PROJ_SOURCES, SHRINK_K, LogsNotFoundError, attach_matches,
-                                   build_projections, filter_available, project_dunkest, uncertain_mark)
+                                   build_projections, filter_available, project_dunkest, short_reason,
+                                   uncertain_mark)
 
 # (guards, forwards, centers) parmi les 5 titulaires : hypothèse G-F-C, à confirmer dans l'app
 FORMATIONS = {"2-2-1": (2, 2, 1), "1-2-2": (1, 2, 2), "2-1-2": (2, 1, 2),
@@ -111,9 +112,12 @@ if __name__ == "__main__":
     report = (lambda: get_report()[1]) if a.injuries == "on" else None
     try:
         dates = parse_dates(a.dates) if a.dates else None
+        schedule = fetch_schedule() if dates else None
+        # Règle Dunkest : seul le premier match de chaque équipe dans la fenêtre compte.
+        fg = first_game_dates(schedule, dates) if dates else None
         d, gp_label = build_projections(df, a.proj_source, a.logs, injuries=report, dates=dates,
-                                        unknown_p=a.unknown_p)
-        labels = match_labels(fetch_schedule(), dates) if dates else None
+                                        first_games=fg, unknown_p=a.unknown_p)
+        labels = match_labels(schedule, dates) if dates else None
     except LogsNotFoundError as e:
         raise SystemExit(str(e))
     except InjuryReportError as e:
@@ -149,8 +153,9 @@ if __name__ == "__main__":
     print(f"Projections : source {a.proj_source} | blessures : {a.injuries}"
           + (" (proj = p_play x proj si joue)" if a.injuries == "on" else ""))
     if "status" in team:
-        team = team.assign(name=[f"{n} {uncertain_mark(s)}".strip() for n, s in zip(team.name, team.status)])
-    cols = ["role", "name"] + (["status", "p_play"] if "status" in team else []) + \
+        team = team.assign(name=[f"{n} {uncertain_mark(s)}".strip() for n, s in zip(team.name, team.status)],
+                           motif=team.reason.map(short_reason))
+    cols = ["role", "name"] + (["status", "p_play", "motif"] if "status" in team else []) + \
         ["team_code"] + (["match"] if "match" in team else []) + ["position", "cr", "gp", "proj"]
     print(team[cols].rename(columns={"gp": gp_label, "status": "statut"}).round(2).to_string(index=False))
     print(f"Coût total : {team.cr.sum():.1f}")

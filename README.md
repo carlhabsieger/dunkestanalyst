@@ -62,8 +62,14 @@ au statut inconnu. La projection devient proj = p_play x proj_if_play.
 `--dates 2026-11-01,2026-11-02` (optimiseur et `buy.py`) exclut les équipes sans match à ces dates
 et affiche le match de chaque joueur proposé (« 02/11 @HOU 8:30 pm ET »). Source : nba_api
 `ScheduleLeagueV2` (saison entière en un appel, sauvegardée dans `data/schedule_2026-27.csv`).
-Avec `--dates`, le rapport des blessures est restreint aux matchs de ces dates ; un joueur listé
-pour un match antérieur garde son dernier statut (motif « [statut du 01/11] »).
+Règle Dunkest : dans une fenêtre de plusieurs dates, seul le **premier match** de chaque équipe
+compte. La colonne match et le statut blessure se rapportent à ce match (« (+1 match non compté) »
+signale un second match dans la fenêtre). Un joueur listé seulement pour un match antérieur garde
+son dernier statut, avec son âge dans le motif (« [statut du 01/11, 3 j avant] »).
+
+`--window-from-dunkest` n'existe pas : l'API de config Dunkest (`leagues/1/config`) ne donne ni les
+dates des journées ni le nombre de tours de la prochaine journée (seulement `num_rounds` et
+`started_at` du tour en cours), donc la fenêtre ne peut pas être calculée sans hypothèse non vérifiée.
 
 ```
 python -m src.data.schedule 2026-11-02     # matchs du jour et heures

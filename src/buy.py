@@ -22,10 +22,10 @@ from scipy.sparse import csr_array
 import warnings
 
 from src.data.injuries import InjuryReportError, get_report
-from src.data.schedule import ScheduleError, fetch_schedule, match_labels, parse_dates
+from src.data.schedule import ScheduleError, fetch_schedule, first_game_dates, match_labels, parse_dates
 from src.model.injury_probs import DEFAULT_UNKNOWN_P, is_uncertain
 from src.model.projections import (LOGS_PATH, PROJ_SOURCES, LogsNotFoundError, attach_matches,
-                                   build_projections, filter_available, uncertain_mark)
+                                   build_projections, filter_available, short_reason, uncertain_mark)
 from src.optimizer import FORMATIONS, MAX_PER_TEAM, load_snapshot
 
 POSITIONS = ("G", "F", "C")
@@ -331,7 +331,8 @@ def format_option(k, opt, credits, gp_label="mj"):
         "poste": t.position,
         "nom": [f"{n} {uncertain_mark(s)}".strip() for n, s in zip(t.name, t.status)] if "status" in t
         else t.name,
-        **({"statut": t.status, "p_play": t.p_play.map(lambda v: f"{v:.2f}")} if "status" in t else {}),
+        **({"statut": t.status, "p_play": t.p_play.map(lambda v: f"{v:.2f}"),
+            "motif": t.reason.map(short_reason)} if "status" in t else {}),
         "équipe": t.team_code,
         **({"match": t.match} if "match" in t else {}),
         "prix": t.cr.map(lambda v: f"{v:.1f}"),
@@ -377,9 +378,12 @@ def main(argv=None):
     report = (lambda: get_report()[1]) if a.injuries == "on" else None
     try:
         dates = parse_dates(a.dates) if a.dates else None
+        schedule = fetch_schedule() if dates else None
+        # Règle Dunkest : seul le premier match de chaque équipe dans la fenêtre compte.
+        fg = first_game_dates(schedule, dates) if dates else None
         d, gp_label = build_projections(df, a.proj_source, a.logs, injuries=report, dates=dates,
-                                        unknown_p=a.unknown_p)
-        labels = match_labels(fetch_schedule(), dates) if dates else None
+                                        first_games=fg, unknown_p=a.unknown_p)
+        labels = match_labels(schedule, dates) if dates else None
     except LogsNotFoundError as e:
         print(f"Erreur : {e}", file=sys.stderr)
         return 1
@@ -404,8 +408,9 @@ def main(argv=None):
             show = ["name", "team_code", "position", "cr", "mj Dunkest", "min"]
             show += ([gp_label] if gp_label != "mj Dunkest" else [])
             if "status" in d:
-                hit = hit.merge(d[["id", "status", "p_play"]], on="id", how="left")
-                show += ["status", "p_play"]
+                hit = hit.merge(d[["id", "status", "p_play", "reason"]], on="id", how="left")
+                hit["motif"] = hit.reason.map(short_reason, na_action="ignore")
+                show += ["status", "p_play", "motif"]
             show += ["proj"]
             print(hit[show].round(2).to_string(index=False))
         if not a.buy:

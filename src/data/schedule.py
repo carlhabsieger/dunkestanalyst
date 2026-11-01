@@ -82,10 +82,30 @@ def games_on(schedule, dates):
     return pd.concat([home, away]).sort_values(["team_code", "game_date"]).reset_index(drop=True)
 
 
-def match_labels(schedule, dates):
-    """{code équipe: "02/11 @HOU 8:30 pm ET ; 03/11 vs ..."} pour les équipes qui jouent aux dates."""
+def first_games(schedule, dates):
+    """Premier match de chaque équipe dans la fenêtre (règle Dunkest : seul celui-ci compte).
+
+    Une ligne par équipe : team_code, game_date, opponent, label, n_games (matchs dans la fenêtre).
+    """
     g = games_on(schedule, dates)
-    return g.groupby("team_code").label.agg(" ; ".join).to_dict()
+    n = g.groupby("team_code").size().rename("n_games")
+    return g.drop_duplicates("team_code", keep="first").join(n, on="team_code").reset_index(drop=True)
+
+
+def first_game_dates(schedule, dates):
+    """{code équipe: date de son premier match dans la fenêtre}"""
+    return dict(zip(*first_games(schedule, dates)[["team_code", "game_date"]].T.values))
+
+
+def match_labels(schedule, dates):
+    """{code équipe: "02/11 @HOU 8:30 pm ET"} : premier match de la fenêtre seulement.
+
+    Si l'équipe joue encore ensuite dans la fenêtre : « (+1 match non compté) ».
+    """
+    f = first_games(schedule, dates)
+    extra = [f" (+{k - 1} match{'s' if k > 2 else ''} non compté{'s' if k > 2 else ''})" if k > 1 else ""
+             for k in f.n_games]
+    return dict(zip(f.team_code, f.label + extra))
 
 
 def main(argv=None):
