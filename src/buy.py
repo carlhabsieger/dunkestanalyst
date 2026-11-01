@@ -22,8 +22,10 @@ from scipy.sparse import csr_array
 import warnings
 
 from src.data.injuries import InjuryReportError, get_report
-from src.model.projections import (LOGS_PATH, PROJ_SOURCES, LogsNotFoundError, build_projections,
-                                   filter_available)
+from src.data.schedule import ScheduleError, fetch_schedule, match_labels, parse_dates
+from src.model.injury_probs import DEFAULT_UNKNOWN_P, is_uncertain
+from src.model.projections import (LOGS_PATH, PROJ_SOURCES, LogsNotFoundError, attach_matches,
+                                   build_projections, filter_available, uncertain_mark)
 from src.optimizer import FORMATIONS, MAX_PER_TEAM, load_snapshot
 
 POSITIONS = ("G", "F", "C")
@@ -327,9 +329,11 @@ def format_option(k, opt, credits, gp_label="mj"):
         "slot": t.slot,
         "rôle": [ROLE_LABEL[r] + (" (CAP)" if cap else "") for r, cap in zip(t.role, t.captain)],
         "poste": t.position,
-        "nom": t.name,
+        "nom": [f"{n} {uncertain_mark(s)}".strip() for n, s in zip(t.name, t.status)] if "status" in t
+        else t.name,
         **({"statut": t.status, "p_play": t.p_play.map(lambda v: f"{v:.2f}")} if "status" in t else {}),
         "équipe": t.team_code,
+        **({"match": t.match} if "match" in t else {}),
         "prix": t.cr.map(lambda v: f"{v:.1f}"),
         gp_label: t.gp.astype(int) if "gp" in t else "",
         "proj": t.proj.map(lambda v: f"{v:.1f}"),
@@ -361,6 +365,10 @@ def main(argv=None):
                     help="rapport officiel des blessures : proj = p_play x proj, Out exclus (défaut on)")
     ap.add_argument("--min-p-play", type=float, default=0.0,
                     help="exclut les candidats dont la probabilité de jouer est sous ce seuil (défaut 0)")
+    ap.add_argument("--unknown-p", type=float, default=DEFAULT_UNKNOWN_P,
+                    help="probabilité de jouer si le statut est inconnu : rapport non soumis ou hors rapport (défaut 1)")
+    ap.add_argument("--dates", default=None,
+                    help="dates de match AAAA-MM-JJ séparées par des virgules : équipes sans match exclues")
     a = ap.parse_args(argv)
 
     df, path = load_snapshot(a.snapshot)
@@ -368,7 +376,10 @@ def main(argv=None):
     warnings.formatwarning = lambda msg, *args, **kw: f"Attention : {msg}\n"
     report = (lambda: get_report()[1]) if a.injuries == "on" else None
     try:
-        d, gp_label = build_projections(df, a.proj_source, a.logs, injuries=report)
+        dates = parse_dates(a.dates) if a.dates else None
+        d, gp_label = build_projections(df, a.proj_source, a.logs, injuries=report, dates=dates,
+                                        unknown_p=a.unknown_p)
+        labels = match_labels(fetch_schedule(), dates) if dates else None
     except LogsNotFoundError as e:
         print(f"Erreur : {e}", file=sys.stderr)
         return 1
@@ -376,6 +387,11 @@ def main(argv=None):
         print(f"Erreur : rapport des blessures introuvable : {e}\n"
               f"Relance avec --injuries off pour ignorer les blessures.", file=sys.stderr)
         return 1
+    except ScheduleError as e:
+        print(f"Erreur : {e}\nRelance sans --dates pour ignorer le calendrier.", file=sys.stderr)
+        return 1
+    if dates:
+        print(f"Dates : {', '.join(map(str, dates))} | {len(labels)} équipes jouent")
 
     if a.find:
         hit = df[df.name.map(norm).str.contains(norm(a.find), regex=False)]
@@ -415,6 +431,8 @@ def main(argv=None):
             print(f"Attention : joueur exclu introuvable, ignoré : {nm}", file=sys.stderr)
 
         avail = filter_available(d, a.min_p_play)          # Out toujours exclus si --injuries on
+        if dates:
+            avail = attach_matches(avail, labels)          # équipes sans match aux dates exclues
         pool = avail[(avail.gp >= a.min_gp) & ~avail.id.isin(owned.id) & ~avail.id.isin(excl.id)]
         print(f"Demande : {', '.join(s.text for s in slots)} | budget {a.credits:.1f} | "
               f"capitaine : {'oui' if a.captain else 'non'} | {len(pool)} candidats ({gp_label} >= {a.min_gp})")
@@ -433,6 +451,11 @@ def main(argv=None):
         print(format_option(k, opt, a.credits, gp_label))
     if len(options) < a.alts:
         print(f"\nSeulement {len(options)} combinaison(s) possible(s).")
+    if "status" in d:
+        counts = [f"option {k} : {int(o.table.status.map(is_uncertain).sum())} / {len(o.table)}"
+                  for k, o in enumerate(options, 1)]
+        print(f"\nJoueurs proposés au statut inconnu (?) : {' | '.join(counts)}"
+              f" (p_play = {a.unknown_p} pour ces joueurs)")
     return 0
 
 

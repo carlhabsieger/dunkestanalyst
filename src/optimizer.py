@@ -8,8 +8,10 @@ from scipy.optimize import Bounds, LinearConstraint, milp
 import warnings
 
 from src.data.injuries import InjuryReportError, get_report
-from src.model.projections import (LOGS_PATH, PROJ_SOURCES, SHRINK_K, LogsNotFoundError,
-                                   build_projections, filter_available, project_dunkest)
+from src.data.schedule import ScheduleError, fetch_schedule, match_labels, parse_dates
+from src.model.injury_probs import DEFAULT_UNKNOWN_P, is_uncertain
+from src.model.projections import (LOGS_PATH, PROJ_SOURCES, SHRINK_K, LogsNotFoundError, attach_matches,
+                                   build_projections, filter_available, project_dunkest, uncertain_mark)
 
 # (guards, forwards, centers) parmi les 5 titulaires : hypothèse G-F-C, à confirmer dans l'app
 FORMATIONS = {"2-2-1": (2, 2, 1), "1-2-2": (1, 2, 2), "2-1-2": (2, 1, 2),
@@ -98,19 +100,31 @@ if __name__ == "__main__":
                     help="rapport officiel des blessures : proj = p_play x proj, Out exclus (défaut on)")
     ap.add_argument("--min-p-play", type=float, default=0.0,
                     help="exclut les candidats dont la probabilité de jouer est sous ce seuil (défaut 0)")
+    ap.add_argument("--unknown-p", type=float, default=DEFAULT_UNKNOWN_P,
+                    help="probabilité de jouer si le statut est inconnu : rapport non soumis ou hors rapport (défaut 1)")
+    ap.add_argument("--dates", default=None,
+                    help="dates de match AAAA-MM-JJ séparées par des virgules : équipes sans match exclues")
     a = ap.parse_args()
     exclude = {x.strip().lower() for x in a.exclude.split(",") if x.strip()}
     df, path = load_snapshot(a.snapshot)
     warnings.formatwarning = lambda msg, *args, **kw: f"Attention : {msg}\n"
     report = (lambda: get_report()[1]) if a.injuries == "on" else None
     try:
-        d, gp_label = build_projections(df, a.proj_source, a.logs, injuries=report)
+        dates = parse_dates(a.dates) if a.dates else None
+        d, gp_label = build_projections(df, a.proj_source, a.logs, injuries=report, dates=dates,
+                                        unknown_p=a.unknown_p)
+        labels = match_labels(fetch_schedule(), dates) if dates else None
     except LogsNotFoundError as e:
         raise SystemExit(str(e))
     except InjuryReportError as e:
         raise SystemExit(f"Rapport des blessures introuvable : {e}\n"
                          f"Relance avec --injuries off pour ignorer les blessures.")
+    except ScheduleError as e:
+        raise SystemExit(f"{e}\nRelance sans --dates pour ignorer le calendrier.")
     d = filter_available(d, a.min_p_play)
+    if dates:
+        print(f"Dates : {', '.join(map(str, dates))} | {len(labels)} équipes jouent")
+        d = attach_matches(d, labels)
     budget = BUDGET - a.coach_cost
     print(f"Snapshot : {path} | budget joueurs : {budget:.1f}")
     results = {}
@@ -134,7 +148,13 @@ if __name__ == "__main__":
     print(f"\nMeilleure formation : {fm} ({val:.1f} pts)")
     print(f"Projections : source {a.proj_source} | blessures : {a.injuries}"
           + (" (proj = p_play x proj si joue)" if a.injuries == "on" else ""))
+    if "status" in team:
+        team = team.assign(name=[f"{n} {uncertain_mark(s)}".strip() for n, s in zip(team.name, team.status)])
     cols = ["role", "name"] + (["status", "p_play"] if "status" in team else []) + \
-        ["team_code", "position", "cr", "gp", "proj"]
+        ["team_code"] + (["match"] if "match" in team else []) + ["position", "cr", "gp", "proj"]
     print(team[cols].rename(columns={"gp": gp_label, "status": "statut"}).round(2).to_string(index=False))
     print(f"Coût total : {team.cr.sum():.1f}")
+    if "status" in team:
+        n_unk = int(team.status.map(is_uncertain).sum())
+        print(f"Joueurs proposés au statut inconnu (?) : {n_unk} / {len(team)}"
+              + (f" (p_play = {a.unknown_p} appliqué)" if n_unk else ""))

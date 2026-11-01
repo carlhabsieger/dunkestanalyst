@@ -45,9 +45,32 @@ jusqu'au dernier rapport publié, sauvegardé dans `data/injuries_latest.csv`. L
 (ET et Paris) et son ancienneté sont affichées.
 
 Chaque statut donne une probabilité de jouer (`STATUS_P_PLAY`) : Out 0, Doubtful 0,15,
-Questionable 0,5, Probable 0,85, Available 1. Un statut inconnu reçoit 0,5 avec un avertissement ;
-un joueur absent du rapport est « non listé » (p = 1). La projection devient
-proj = p_play x proj_if_play.
+Questionable 0,5, Probable 0,85, Available 1. Un statut écrit mais inconnu reçoit 0,5 avec un
+avertissement. Un joueur sans ligne dans le rapport prend un statut selon son équipe :
+
+| Statut | Cas | p_play |
+|---|---|---|
+| non listé | l'équipe a soumis son rapport pour son premier match du rapport | 1 |
+| rapport non soumis ? | ce premier match est « NOT YET SUBMITTED » | `--unknown-p` (défaut 1) |
+| hors rapport ? | l'équipe n'a aucun match couvert par le rapport | `--unknown-p` (défaut 1) |
+
+Le « ? » est affiché à côté du nom, et chaque sortie se termine par le nombre de joueurs proposés
+au statut inconnu. La projection devient proj = p_play x proj_if_play.
+
+### Calendrier (`src/data/schedule.py`)
+
+`--dates 2026-11-01,2026-11-02` (optimiseur et `buy.py`) exclut les équipes sans match à ces dates
+et affiche le match de chaque joueur proposé (« 02/11 @HOU 8:30 pm ET »). Source : nba_api
+`ScheduleLeagueV2` (saison entière en un appel, sauvegardée dans `data/schedule_2026-27.csv`).
+Avec `--dates`, le rapport des blessures est restreint aux matchs de ces dates ; un joueur listé
+pour un match antérieur garde son dernier statut (motif « [statut du 01/11] »).
+
+```
+python -m src.data.schedule 2026-11-02     # matchs du jour et heures
+```
+
+Note : la colonne « Game Time » du rapport officiel n'a pas d'AM/PM (« 07:30 (ET) » pour
+19 h 30, vérifié dans le texte du PDF) ; elle n'est pas utilisée, l'heure vient du calendrier.
 
 ```
 python -m src.data.injuries                         # dernier rapport, statuts, non rapprochés
@@ -65,8 +88,10 @@ python -m src.buy --buy "T:G@8-12" --credits 12 --min-p-play 0.6
 - L'espérance p x proj ignore la possibilité de remplacer un titulaire absent entre deux tours.
 - Le rapport est mis à jour tard dans la journée, et le marché Dunkest peut fermer avant les statuts
   finaux.
-- Le rapport ne couvre que les matchs à venir proches : un joueur dont l'équipe ne joue pas est
-  « non listé » (p = 1).
+- Le rapport ne couvre que les matchs à venir proches : « rapport non soumis » et « hors rapport »
+  gardent p = 1 par défaut (statut réel inconnu, signalé par « ? »).
+- La soumission est jugée sur le premier match de l'équipe dans le rapport (une équipe peut avoir
+  soumis pour un match et pas pour le suivant).
 - La répartition des minutes des coéquipiers d'un absent n'est pas encore modélisée.
 - Java est requis (lecture du PDF par tabula) : `sudo apt install default-jre`.
 

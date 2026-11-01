@@ -11,8 +11,9 @@ import unicodedata
 import numpy as np
 import pandas as pd
 
-from src.data.injuries import to_dunkest_name
-from src.model.injury_probs import NOT_LISTED, OUT, p_play_for
+from src.data.injuries import players_rows, report_teams, restrict_dates, to_dunkest_name
+from src.model.injury_probs import (DEFAULT_UNKNOWN_P, NOT_LISTED, NOT_SUBMITTED, OUT, OUT_OF_REPORT,
+                                    is_uncertain, p_play_for)
 from src.model.name_aliases import NAME_ALIASES
 
 LOGS_PATH = "data/player_logs.csv"
@@ -117,31 +118,68 @@ def match_report(d, top=15):
     return "\n".join(lines)
 
 
-def match_injuries(d, report, aliases=NAME_ALIASES):
+def match_injuries(d, report, aliases=NAME_ALIASES, dates=None):
     """Statut et motif du rapport pour chaque joueur de d (rapprochement normalize_name + alias).
 
-    Retourne (status, reason) alignés sur d.index ("non listé" / "" si absent du rapport), et les
-    lignes du rapport sans joueur Dunkest correspondant. Hypothèse : si un joueur figure plusieurs
-    fois (plusieurs matchs), on garde sa première ligne, le rapport étant trié par match.
+    Le rapport est d'abord restreint aux dates demandées (toutes si dates est vide). Joueur avec une
+    ligne : statut de sa ligne du premier match. Joueur sans ligne, selon son équipe (team_code) :
+    « non listé » si l'équipe est dans le rapport et a soumis, « rapport non soumis » si son premier
+    match du rapport est « NOT YET SUBMITTED », « hors rapport » sinon.
+    Retourne (status, reason) alignés sur d.index et les lignes joueurs du rapport sans joueur Dunkest.
     """
-    rep = report.assign(key=report["Player Name"].map(to_dunkest_name).map(normalize_name))
-    first = rep.drop_duplicates("key").set_index("key")
+    rep = restrict_dates(report, dates)
+    rows = players_rows(rep)
+    rows = rows.assign(key=rows["Player Name"].map(to_dunkest_name).map(normalize_name))
+    first = rows.sort_values("game_date", kind="stable").drop_duplicates("key").set_index("key")
+    if dates:
+        # Hypothèse : un joueur sans ligne aux dates demandées mais listé pour un match antérieur du
+        # rapport garde son dernier statut connu (un Out du 01/11 reste Out le 02/11).
+        prev = players_rows(report)
+        prev = prev[prev.game_date < min(dates)]
+        prev = prev.assign(key=prev["Player Name"].map(to_dunkest_name).map(normalize_name),
+                           Reason=[f"[statut du {g:%d/%m}] {r}" for g, r in zip(prev.game_date, prev.Reason)])
+        prev = prev.sort_values("game_date", kind="stable").drop_duplicates("key", keep="last").set_index("key")
+        first = pd.concat([first, prev[~prev.index.isin(first.index)]])
+    teams_in, teams_ns = report_teams(rep)
+
+    def unlisted(team):
+        if team in teams_ns:
+            return NOT_SUBMITTED
+        return NOT_LISTED if team in teams_in else OUT_OF_REPORT
+
     key = dunkest_keys(d.name, aliases)
-    status = key.map(first["Current Status"]).fillna(NOT_LISTED)
+    teams = d.team_code if "team_code" in d else pd.Series(None, index=d.index)
+    status = key.map(first["Current Status"]).fillna(teams.map(unlisted))
     reason = key.map(first["Reason"]).fillna("")
-    unmatched = rep[~rep.key.isin(set(key))].drop(columns="key")
+    unmatched = rows[~rows.key.isin(set(key))].drop(columns="key")
     return status, reason, unmatched
 
 
-def apply_injuries(d, report, aliases=NAME_ALIASES):
+def apply_injuries(d, report, aliases=NAME_ALIASES, dates=None, unknown_p=DEFAULT_UNKNOWN_P):
     """Ajoute status, reason, p_play, proj_if_play (ancienne proj) et proj = p_play * proj_if_play.
 
-    Retourne (d, lignes du rapport non rapprochées). Un statut inconnu reçoit 0,5 (avertissement).
+    Retourne (d, lignes du rapport non rapprochées). Un statut écrit mais inconnu reçoit 0,5
+    (avertissement) ; « rapport non soumis » et « hors rapport » reçoivent unknown_p.
     """
-    status, reason, unmatched = match_injuries(d, report, aliases)
-    d = d.assign(status=status, reason=reason, p_play=p_play_for(status), proj_if_play=d.proj)
+    status, reason, unmatched = match_injuries(d, report, aliases, dates)
+    d = d.assign(status=status, reason=reason, p_play=p_play_for(status, unknown_p), proj_if_play=d.proj)
     d["proj"] = d.p_play * d.proj_if_play
     return d, unmatched
+
+
+def attach_matches(d, labels):
+    """Garde les joueurs dont l'équipe joue aux dates demandées et ajoute la colonne match.
+
+    labels : {code équipe: "02/11 @HOU 8:30 pm ET"} (src.data.schedule.match_labels).
+    """
+    d = d[d.team_code.isin(set(labels))].copy()
+    d["match"] = d.team_code.map(labels)
+    return d
+
+
+def uncertain_mark(status):
+    """ "?" pour un statut inconnu (rapport non soumis ou hors rapport), "" sinon."""
+    return "?" if is_uncertain(status) else ""
 
 
 def filter_available(d, min_p_play=0.0):
@@ -162,14 +200,16 @@ def injury_match_report(unmatched, n_report, top=15):
     return "\n".join(lines)
 
 
-def build_projections(df, source="nba", logs_path=LOGS_PATH, verbose=True, injuries=None):
+def build_projections(df, source="nba", logs_path=LOGS_PATH, verbose=True, injuries=None, dates=None,
+                      unknown_p=DEFAULT_UNKNOWN_P):
     """Projections pour les CLI. Retourne (d, gp_label).
 
     source "nba" : la colonne gp vaut n (matchs NBA), l'ancienne valeur passe dans gp_dunkest.
     Seuls les joueurs ayant au moins un match sont conservés, comme dans l'ancienne project().
     injuries : DataFrame du rapport (src.data.injuries), fonction sans argument qui le renvoie
     (appelée après le chargement des logs, donc pas de réseau si les logs manquent), ou None.
-    Les candidats se filtrent ensuite avec filter_available.
+    Les candidats se filtrent ensuite avec filter_available. dates restreint le rapport aux matchs
+    de ces dates ; unknown_p est la probabilité des statuts inconnus (non soumis, hors rapport).
     """
     if source == "dunkest":
         d, gp_label = project_dunkest(df), "mj Dunkest"
@@ -184,9 +224,9 @@ def build_projections(df, source="nba", logs_path=LOGS_PATH, verbose=True, injur
     if callable(injuries):
         injuries = injuries()
     if injuries is not None:
-        d, _ = apply_injuries(d, injuries)
+        d, _ = apply_injuries(d, injuries, dates=dates, unknown_p=unknown_p)
         # Non rapprochés calculés sur tout le snapshot : un blessé sans match NBA reste « rapproché ».
-        _, _, unmatched = match_injuries(df, injuries)
+        _, _, unmatched = match_injuries(df, injuries, dates=dates)
         if verbose:
-            print(injury_match_report(unmatched, len(injuries)))
+            print(injury_match_report(unmatched, len(players_rows(restrict_dates(injuries, dates)))))
     return d, gp_label
