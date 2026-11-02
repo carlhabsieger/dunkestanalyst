@@ -101,6 +101,63 @@ python -m src.buy --buy "T:G@8-12" --credits 12 --min-p-play 0.6
 - La répartition des minutes des coéquipiers d'un absent n'est pas encore modélisée.
 - Java est requis (lecture du PDF par tabula) : `sudo apt install default-jre`.
 
+## Gestion des équipes (`src/team.py`)
+
+Un fichier par équipe, `teams/<nom>.json`, versionné et modifiable à la main :
+
+```json
+{
+  "players": ["Paolo Banchero", "Ty Jerome", "Jalen Smith", "Cedric Coward", "Zach LaVine",
+              "Duncan Robinson", "Paul Reed", "Jonathan Kuminga", "Ja'Kobe Walter", "Jaxson Hayes"],
+  "cash": 3.8,
+  "coach": "Joe Mazzulla (BOS)",
+  "excluded": ["Nikola Jokić"],
+  "excluded_from_teams": ["equipe2"],
+  "price_overrides": {"Joueur Absent": {"cr": 9.5, "position": "F", "team_code": "BOS"}}
+}
+```
+
+- `excluded` : joueurs pris par d'autres ; `excluded_from_teams` : autres équipes de l'utilisateur dont
+  les joueurs ne sont pas proposés à l'achat.
+- `price_overrides` : prix d'un joueur absent du snapshot (un nombre suffit s'il est dans le snapshot ;
+  sinon un objet avec `position` et `team_code`, nécessaires aux quotas).
+- `coach` : texte libre, non modélisé ; s'il se termine par un code équipe entre parenthèses
+  (« Nom (BOS) »), il compte dans la limite de 3 par équipe NBA.
+
+```
+python -m src.team list
+python -m src.team init NOM [--players "A,B,..."] [--cash 1.4]
+python -m src.team show NOM [--dates a,b,c] [--html rapport.html]
+python -m src.team add NOM "Joueur" | remove NOM "Joueur" | swap NOM "Ancien" "Nouveau"
+python -m src.team set NOM --cash 1.4 --coach "..." --exclude "A,B" --exclude-teams "autre" --price "Nom=9.5"
+python -m src.team lineup NOM --dates a,b,c        # meilleure composition sans transfert (gratuit)
+python -m src.team suggest NOM --dates a,b,c [--max-transfers 3] [--horizon 1] [--min-net-gain 1.0] [--allow-out]
+```
+
+Les noms se résolvent sans accents ni casse, avec la table d'alias et une correspondance approchée ;
+un nom ambigu affiche les candidats sans rien choisir. `add`, `swap` et `init` refusent plus de
+10 joueurs, plus de 4 G / 4 F / 2 C et plus de 3 joueurs d'une équipe NBA. Chaque écriture copie
+l'ancienne version dans `teams/.backup/` (à ignorer dans git : non fait, à décider).
+
+**Règle des 5 points.** Changer de formation, de cinq majeur, de 6e homme ou de capitaine est gratuit.
+Chaque joueur transféré coûte 5 points, retranchés du score de la journée suivante. `suggest` compare,
+pour k = 0 à `--max-transfers`, le meilleur effectif avec au plus k joueurs nouveaux (objectif : points
+attendus moins 5 par transfert) et ne recommande un transfert que si le gain net atteint
+`--min-net-gain` (défaut 1). Quand le meilleur plan utilise moins de k transferts, la meilleure option à
+exactement k transferts est aussi affichée (gain net négatif). Si le marché n'est pas ouvert (statut
+Dunkest différent de `trades_open`), un avertissement s'affiche sans bloquer.
+
+### Limites de la gestion des équipes
+
+- Projections bruitées (peu de matchs) : un écart de moins de 2 points entre deux options est dans le bruit.
+- Prix de vente supposé égal au prix actuel du snapshot (NON vérifié) : budget = prix actuels + cash.
+- `--horizon H` est optimiste : les achats comptent H fois, le coût de 5 points une seule fois, et les
+  joueurs gardés ne sont pas recomptés.
+- Coach non modélisé ; redistribution des minutes des absents absente (phase 3).
+- Un joueur possédé Out, sans match dans la fenêtre ou sans match NBA compte pour 0.
+- Le statut de blessure vient du dernier rapport seulement : un Out d'un rapport précédent est oublié
+  si le nouveau rapport ne liste plus le joueur (voir le compte rendu, correction à décider).
+
 ## Demande précise (`src/buy.py`)
 
 Trouve les meilleurs joueurs à acheter pour quelques places précises de l'équipe, en tenant compte
