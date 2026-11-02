@@ -1,0 +1,18 @@
+{
+  "players": ["Nikola Jokic", "Ty Jerome", "Ajay Mitchell", "Cameron Boozer",
+    "Kenrich Williams", "Anthony Black", "Joan Beringer", "Moritz Wagner",
+    "Khaman Maluach", "Trevon Brazile"],
+  "cash": 1.1,
+  "coach": "Joe Mazzulla (BOS)",
+  "excluded": [
+    "Cade Cunningham", "Zach Lavine", "Dylan Harper", "Jaden Mcdaniels",
+    "Zaccharie Risacher", "Matisse Thybulle", "Isaiah Jackson", "Moussa Diabate",
+    "Jaxson Hayes",
+    "Keyonte George", "Peyton Watson", "Marcus Sasser", "Javonte Green",
+    "Zion Williamson", "Paul Reed", "Toumani Camara", "Cooper Flagg",
+    "Walker Kessler", "Mo Bamba"
+  ],
+  "excluded_from_teams": [],
+  "price_overrides": {},
+  "league": {"participant": "Carl"}
+}
