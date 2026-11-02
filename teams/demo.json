@@ -1,0 +1,19 @@
+{
+  "players": [
+    "Paolo Banchero",
+    "Ty Jerome",
+    "Jalen Smith",
+    "Cedric Coward",
+    "Zach LaVine",
+    "Duncan Robinson",
+    "Paul Reed",
+    "Jonathan Kuminga",
+    "Ja'Kobe Walter",
+    "Jaxson Hayes"
+  ],
+  "cash": 3.8,
+  "coach": "",
+  "excluded": [],
+  "excluded_from_teams": [],
+  "price_overrides": {}
+}
