@@ -353,6 +353,9 @@ def main(argv=None):
     ap.add_argument("--owned-roles", default="",
                     help='rôle des joueurs possédés : "Nom A:T,Nom B:R" (un nom cité ici est considéré possédé)')
     ap.add_argument("--exclude", default="", help='joueurs pris par des amis, jamais proposés : "Nom C"')
+    ap.add_argument("--league-of", default=None,
+                    help="exclut les joueurs des autres participants de la ligue de l'équipe NOM (teams/NOM.json)")
+    ap.add_argument("--league-file", default=None, help="xlsx de ligue local (au lieu du téléchargement)")
     ap.add_argument("--captain", action="store_true", help="autorise un capitaine (x1,5) parmi les slots T")
     ap.add_argument("--min-gp", type=int, default=1,
                     help="matchs joués minimum, comptés selon --proj-source (défaut 1)")
@@ -433,7 +436,15 @@ def main(argv=None):
             raise BuyError(f"Joueur(s) possédé(s) introuvable(s) dans le snapshot : {', '.join(missing)}. "
                            f"Vérifie l'orthographe avec --find.")
         owned = owned.assign(role=owned.name.map(norm).map(owned_roles))
-        excl, missing_ex = find_players(df, split_names(a.exclude))
+        excl_names = split_names(a.exclude)
+        if a.league_of:
+            from src.league import LeagueError, league_exclusions_for
+            from src.team import TeamError
+            try:
+                excl_names += league_exclusions_for(a.league_of, list(df.name), a.league_file)
+            except (LeagueError, TeamError) as e:
+                raise BuyError(str(e)) from None
+        excl, missing_ex = find_players(df, excl_names)
         for nm in missing_ex:
             print(f"Attention : joueur exclu introuvable, ignoré : {nm}", file=sys.stderr)
 

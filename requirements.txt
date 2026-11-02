@@ -9,3 +9,4 @@ ipykernel
 pytest
 requests
 nbainjuries
+openpyxl

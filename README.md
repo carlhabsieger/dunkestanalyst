@@ -179,6 +179,49 @@ Dunkest différent de `trades_open`), un avertissement s'affiche sans bloquer.
 - Le statut de blessure suit l'historique des rapports archivés (voir « Historique des rapports ») :
   un Out reste Out tant qu'un rapport plus récent de son équipe ne l'a pas retiré.
 
+## Ligue et Google Sheet (`src/league.py`)
+
+Le fichier de la ligue privée (Google Sheet au format xlsx, onglets Équipes, Joueurs, Transferts) est lu
+en **lecture seule**. Seules les équipes qui ont un champ `"league"` sont concernées :
+
+```json
+"league": {"participant": "Carl"}
+```
+
+Une équipe sans ce champ n'est jamais synchronisée et ne reçoit aucune exclusion de ligue.
+
+Configuration locale, non versionnée : `config/league.json`
+
+```json
+{"sheet_id": "1zB0qVLZMtWQdeCseKaxyJB3gONHI7tjJ", "gid": 1748654859, "xlsx_path": "data/league.xlsx", "cache_hours": 1}
+```
+
+Chargement, une requête au plus par exécution : `--file chemin` si donné ; sinon le cache
+`data/league_cache.xlsx` s'il a moins de `cache_hours` heures ; sinon téléchargement par
+`https://docs.google.com/spreadsheets/d/<id>/export?format=xlsx` (celle qui fonctionne depuis WSL),
+puis `https://drive.google.com/uc?export=download&id=<id>` si la première échoue. Si la réponse est une
+page de connexion ou une erreur : le fichier `xlsx_path` s'il existe (Fichier > Télécharger > .xlsx),
+sinon le cache périmé avec un avertissement, sinon un message d'erreur. La source et l'âge sont affichés.
+
+```
+python -m src.team league                     # participants, joueurs par poste, postes à pourvoir, statut
+python -m src.team sync manugreg [--yes]      # effectif et coach depuis le bloc du participant
+python -m src.team suggest manugreg --dates a,b   # exclut les joueurs des autres participants
+python -m src.buy --buy "T:G@8-12" --credits 12 --league-of manugreg
+python -m src.optimizer --coach-cost 9 --league-of manugreg
+```
+
+- Les blocs sont repérés par les cellules « Équipe de » (aucune position en dur) ; une case Joueur vide
+  est un poste à pourvoir.
+- `sync` affiche le diff (retirés, ajoutés, coach), demande confirmation, sauvegarde l'ancien fichier
+  dans `teams/.backup/` et écrit. Le cash n'est jamais modifié (absent du fichier). Aucun nom non
+  résolu n'est deviné : s'il en reste, rien n'est écrit. Le coach est noté « Nom (EQU) ».
+- Exclusions : les joueurs de tous les autres participants (jamais les coachs), calculés à l'exécution
+  et jamais écrits dans les JSON ; le champ `excluded` reste valable en plus.
+- Après une recommandation, `suggest` affiche les lignes « À noter dans l'onglet Transferts », dans
+  l'ordre des colonnes du fichier et avec l'orthographe de l'onglet Joueurs (listes déroulantes).
+  Le n° de fenêtre est à compléter ; la colonne Contrôle est calculée par le Sheet.
+
 ## Demande précise (`src/buy.py`)
 
 Trouve les meilleurs joueurs à acheter pour quelques places précises de l'équipe, en tenant compte

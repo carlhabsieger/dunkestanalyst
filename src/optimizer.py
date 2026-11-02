@@ -93,6 +93,9 @@ if __name__ == "__main__":
     ap.add_argument("--coach-cost", type=float, default=10.0,
                     help="prix du coach (placeholder, à régler)")
     ap.add_argument("--exclude", default="", help='joueurs déjà pris : "Nom A,Nom B"')
+    ap.add_argument("--league-of", default=None,
+                    help="exclut les joueurs des autres participants de la ligue de l'équipe NOM (teams/NOM.json)")
+    ap.add_argument("--league-file", default=None, help="xlsx de ligue local (au lieu du téléchargement)")
     ap.add_argument("--snapshot", default=None)
     ap.add_argument("--proj-source", choices=PROJ_SOURCES, default="nba",
                     help="nba : tous les matchs NBA (logs) ; dunkest : pdk/gp du snapshot (défaut nba)")
@@ -110,6 +113,13 @@ if __name__ == "__main__":
     a = ap.parse_args()
     exclude = {x.strip().lower() for x in a.exclude.split(",") if x.strip()}
     df, path = load_snapshot(a.snapshot)
+    if a.league_of:
+        from src.league import LeagueError, league_exclusions_for
+        from src.team import TeamError
+        try:
+            exclude |= {n.lower() for n in league_exclusions_for(a.league_of, list(df.name), a.league_file)}
+        except (LeagueError, TeamError) as e:
+            raise SystemExit(f"Erreur : {e}")
     warnings.formatwarning = lambda msg, *args, **kw: f"Attention : {msg}\n"
     report = (lambda: get_report()[1]) if a.injuries == "on" else None
     try:

@@ -74,7 +74,13 @@ def load_team(name, root=TEAMS_DIR):
     if not os.path.exists(path):
         raise TeamError(f"Équipe « {name} » introuvable ({path}). Crée-la avec : python -m src.team init {name}")
     with open(path, encoding="utf-8") as f:
-        data = json.load(f)
+        text = f.read()
+    if not text.strip():
+        raise TeamError(f"{path} est vide : remplis-le (voir README) ou recrée-le avec init.")
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise TeamError(f"{path} : JSON invalide ({e}).") from None
     team = {**EMPTY_TEAM, **data}
     team["players"] = list(team["players"])
     return team
@@ -89,6 +95,7 @@ def save_team(name, team, root=TEAMS_DIR, backup=True):
         os.makedirs(bdir, exist_ok=True)
         shutil.copy2(path, os.path.join(bdir, f"{name}-{datetime.now():%Y%m%d-%H%M%S-%f}.json"))
     ordered = {k: team.get(k, EMPTY_TEAM[k]) for k in EMPTY_TEAM}
+    ordered.update({k: v for k, v in team.items() if k not in ordered})    # ex. "league", conservé tel quel
     with open(path, "w", encoding="utf-8") as f:
         json.dump(ordered, f, ensure_ascii=False, indent=2)
         f.write("\n")
@@ -152,6 +159,12 @@ def player_info(team, snap):
     over = team.get("price_overrides", {}) or {}
     for nm in team["players"]:
         o = over.get(nm)
+        if nm not in by_name.index and o is None:
+            # Nom saisi à la main (ex. « Nikola Jokic ») : même résolution tolérante que add, sans deviner.
+            try:
+                nm = resolve_name(nm, by_name.index)
+            except TeamError:
+                pass
         if nm in by_name.index:
             r = by_name.loc[nm]
             r = r.iloc[0] if isinstance(r, pd.DataFrame) else r
@@ -526,8 +539,130 @@ def _owned_with_projection(a):
     return team, snap, d, labels, owned_frame(team, snap, d, labels)
 
 
+# ---------------------------------------------------------------- ligue (Google Sheet, lecture seule)
+
+def league_check(team, snap, a):
+    """Exclusions de ligue (équipe configurée seulement) et conflits avec l'effectif possédé."""
+    from src.league import league_exclusions, team_league
+    if team_league(team) is None:
+        return []
+    excl = league_exclusions(team, list(snap.name), file=getattr(a, "file", None))
+    clash = sorted(set(excl) & set(team["players"]))
+    if clash:
+        print(f"ATTENTION : joueurs possédés aussi listés chez un autre participant : {', '.join(clash)}")
+    return excl
+
+
+def coach_label(name, team_full_name):
+    """ "Joe Mazzulla", "Boston Celtics" -> "Joe Mazzulla (BOS)" (le code compte dans la limite de 3)."""
+    from src.data.injuries import team_code
+    if not name:
+        return ""
+    code = team_code(team_full_name) if team_full_name else None
+    return f"{name} ({code})" if code else str(name)
+
+
+def sync_plan(team, block, snapshot_names):
+    """Effectif et coach d'après le bloc du participant. Retourne (nouvelle équipe, retirés, ajoutés,
+    (ancien coach, nouveau coach), non résolus). Le cash n'est jamais modifié (absent du fichier)."""
+    from src.league import resolve_all
+    names = [p for _, p, _ in block["players"] if p]
+    resolved, _, unresolved = resolve_all(names, snapshot_names)
+    old, new = team["players"], resolved
+    old_keys, new_keys = {normalize_name(p) for p in old}, {normalize_name(p) for p in new}
+    removed = [p for p in old if normalize_name(p) not in new_keys]      # « Jokic » == « Jokić »
+    added = [p for p in new if normalize_name(p) not in old_keys]
+    coach_name, coach_team = block.get("coach") or (None, None)
+    new_coach = coach_label(coach_name, coach_team) or team.get("coach", "")
+    old_coach = team.get("coach") or ""
+    coach_change = None if normalize_name(old_coach) == normalize_name(new_coach) else (old_coach, new_coach)
+    return {**team, "players": new, "coach": new_coach}, removed, added, coach_change, unresolved
+
+
+def confirm(question, assume_yes=False, input_fn=None):
+    """Oui seulement sur « o » / « oui » ; entrée fermée ou illisible (non interactif) : non."""
+    if assume_yes:
+        return True
+    try:
+        return (input_fn or input)(f"{question} [o/N] ").strip().lower() in ("o", "oui", "y", "yes")
+    except (EOFError, OSError):
+        return False
+
+
+def cmd_sync(a):
+    from src.league import league_context, parse_teams, team_league
+    team = load_team(a.name)
+    lg = team_league(team)
+    if lg is None:
+        raise TeamError(f"L'équipe « {a.name} » n'a pas de configuration \"league\" : pas de synchronisation.")
+    snap = _snap(a)
+    _, wb = league_context(file=a.file)
+    teams = parse_teams(wb)
+    if lg["participant"] not in teams:
+        raise TeamError(f"Participant « {lg['participant']} » absent du fichier ({', '.join(teams)}).")
+    block = teams[lg["participant"]]
+    new, removed, added, coach_change, unresolved = sync_plan(team, block, list(snap.name))
+    print(f"Bloc « {lg['participant']} » : {sum(1 for _, p, _ in block['players'] if p)} joueurs, "
+          f"{block['to_fill']} poste(s) à pourvoir, statut {block['status']}")
+    for u in unresolved:
+        print(f"NON RÉSOLU : {u}")
+    if unresolved:
+        print("Aucune écriture tant que des noms ne sont pas résolus (corrige le nom ou ajoute un alias).")
+        return 1
+    if not removed and not added and coach_change is None:
+        print("Aucune différence : teams/%s.json est déjà à jour." % a.name)
+        return 0
+    print("Différences :")
+    for p in removed:
+        print(f"  - retiré  : {p}")
+    for p in added:
+        print(f"  + ajouté  : {p}")
+    if coach_change:
+        print(f"  coach     : {coach_change[0] or '-'} -> {coach_change[1] or '-'}")
+    print(f"  cash      : {team['cash']} (inchangé : absent du fichier de ligue)")
+    try:
+        check_squad(player_info(new, snap), new.get("coach"))
+    except TeamError as e:
+        print(f"ATTENTION : l'effectif lu ne respecte pas les règles ({e}).")
+    if not confirm(f"Écrire teams/{a.name}.json ?", a.yes):
+        print("Annulé : rien n'a été écrit.")
+        return 1
+    print(f"Écrit : {save_team(a.name, new)} (ancienne version dans {BACKUP_DIR}/)")
+    return 0
+
+
+def cmd_league(a):
+    from src.league import league_context, parse_teams, transfer_header
+    _, wb = league_context(file=a.file)
+    teams = parse_teams(wb)
+    for who, b in teams.items():
+        print(f"\n=== {who} | postes à pourvoir : {b['to_fill']} | statut : {b['status']}")
+        for pos, p, tm in b["players"]:
+            print(f"  {pos:8s} {p or '(à pourvoir)':28s} {tm or ''}")
+        c = b.get("coach") or (None, None)
+        print(f"  {'Coach':8s} {c[0] or '-':28s} {c[1] or ''}")
+    print(f"\nColonnes de l'onglet Transferts : {' | '.join(transfer_header(wb))}")
+    return 0
+
+
+def print_transfer_block(team, moves, a):
+    """Lignes à recopier à la main dans l'onglet Transferts (le Sheet n'est jamais modifié)."""
+    from src.league import league_context, sheet_player_names, team_league, transfer_header, transfer_rows
+    lg = team_league(team)
+    if lg is None or not moves:
+        return
+    _, wb = league_context(file=getattr(a, "file", None), verbose=False)
+    header = transfer_header(wb)
+    rows = transfer_rows(moves, lg["participant"], header, sheet_player_names(wb))
+    print("\nÀ noter dans l'onglet Transferts (lecture seule : à saisir à la main) :")
+    print("  " + " | ".join(header))
+    for r in rows:
+        print("  " + " | ".join(str(v) for v in r))
+
+
 def cmd_show(a):
     team, snap, d, labels, owned = _owned_with_projection(a)
+    league_check(team, snap, a)
     warns = team_warnings(owned)
     for w in warns:
         print(f"ATTENTION : {w}")
@@ -562,6 +697,7 @@ def cmd_lineup(a):
     if w:
         print(f"Info : {w}")
     team, snap, d, labels, owned = _owned_with_projection(a)
+    league_check(team, snap, a)
     for x in team_warnings(owned):
         print(f"ATTENTION : {x}")
     value, fm, lu = lineup(owned)
@@ -579,7 +715,7 @@ def cmd_suggest(a):
     team, snap, d, labels, owned = _owned_with_projection(a)
     for x in team_warnings(owned):
         print(f"ATTENTION : {x}")
-    others = []
+    others = league_check(team, snap, a)               # autres participants de la ligue (si configurée)
     for t in team.get("excluded_from_teams", []):
         others += load_team(t)["players"]
     cands = candidates_for(d, team, labels, a.min_gp, a.allow_out, others)
@@ -613,6 +749,7 @@ def cmd_suggest(a):
               f"(seuil --min-net-gain {a.min_net_gain}) : " + ", ".join(f"{o} -> {i}" for o, i in p.moves(owned)))
         if best.net < NOISE_PTS:
             print(f"  Gain net inférieur à {NOISE_PTS:.0f} points : dans le bruit, à prendre avec prudence.")
+        print_transfer_block(team, p.moves(owned), a)
     else:
         print(f"\nAucun transfert recommandé (aucun gain net >= {a.min_net_gain}).")
     print(NOISE_NOTE)
@@ -643,7 +780,11 @@ def cmd_list(a):
         print("Aucune équipe : python -m src.team init NOM")
     snap = _snap(a) if names else None
     for n in names:
-        t = load_team(n)
+        try:
+            t = load_team(n)
+        except TeamError as e:
+            print(f"{n:15s} illisible : {e}")
+            continue
         try:
             v = f"{player_info(t, snap).cr.sum():.1f}"
         except TeamError:
@@ -731,15 +872,24 @@ def main(argv=None):
     p = sub.add_parser("set"); p.add_argument("name")
     p.add_argument("--cash", type=float); p.add_argument("--coach"); p.add_argument("--exclude")
     p.add_argument("--exclude-teams"); p.add_argument("--price", action="append", help='"Nom=9.5", répétable')
+    p = sub.add_parser("sync", help="met à jour l'effectif depuis le fichier de ligue (équipe avec \"league\")")
+    p.add_argument("name"); p.add_argument("--yes", action="store_true", help="sans confirmation")
+    p.add_argument("--snapshot", default=None)
+    p = sub.add_parser("league", help="participants de la ligue tels que lus dans le fichier")
+    for q in (sub.choices["sync"], sub.choices["league"], sub.choices["show"], sub.choices["lineup"],
+              sub.choices["suggest"]):
+        q.add_argument("--file", default=None, help="xlsx de ligue local (au lieu du téléchargement)")
     a = ap.parse_args(argv)
     cmds = {"list": cmd_list, "init": cmd_init, "show": cmd_show, "lineup": cmd_lineup, "suggest": cmd_suggest,
-            "add": cmd_add, "remove": cmd_remove, "swap": cmd_swap, "set": cmd_set}
+            "add": cmd_add, "remove": cmd_remove, "swap": cmd_swap, "set": cmd_set, "sync": cmd_sync,
+            "league": cmd_league}
     from src.data.injuries import InjuryReportError
     from src.data.schedule import ScheduleError
+    from src.league import LeagueError
     from src.model.projections import LogsNotFoundError
     try:
         return cmds[a.cmd](a)
-    except TeamError as e:
+    except (TeamError, LeagueError) as e:
         print(f"Erreur : {e}", file=sys.stderr)
         return 1
     except InjuryReportError as e:
