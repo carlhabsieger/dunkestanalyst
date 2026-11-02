@@ -431,7 +431,7 @@ def load_context(a):
     fg = first_game_dates(schedule, dates) if dates else None
     report = (lambda: get_report()[1]) if a.injuries == "on" else None
     d, gp_label = build_projections(snap, a.proj_source, a.logs, injuries=report, dates=dates,
-                                    first_games=fg, unknown_p=a.unknown_p)
+                                    first_games=fg, unknown_p=a.unknown_p, stale_days=a.stale_days)
     labels = match_labels(schedule, dates) if dates else None
     print(f"Snapshot : {path}" + (f" | dates : {', '.join(map(str, dates))}" if dates else
                                   " | sans --dates : calendrier non pris en compte"))
@@ -514,6 +514,7 @@ def _common(p, dates_help="dates de match AAAA-MM-JJ (premier match de chaque é
     p.add_argument("--dates", default=None, help=dates_help)
     p.add_argument("--injuries", choices=("on", "off"), default="on")
     p.add_argument("--unknown-p", type=float, default=DEFAULT_UNKNOWN_P)
+    p.add_argument("--stale-days", type=int, default=7)
     p.add_argument("--proj-source", choices=PROJ_SOURCES, default="nba")
     p.add_argument("--logs", default=LOGS_PATH)
     p.add_argument("--snapshot", default=None)

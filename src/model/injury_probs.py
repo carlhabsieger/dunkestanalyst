@@ -16,7 +16,9 @@ OUT = "Out"
 NOT_LISTED = "non listé"              # équipe présente et rapport soumis : p = 1
 NOT_SUBMITTED = "rapport non soumis"  # équipe présente, rapport pas encore soumis : p = unknown_p
 OUT_OF_REPORT = "hors rapport"        # équipe absente du rapport (pas de match couvert) : p = unknown_p
-UNCERTAIN = (NOT_SUBMITTED, OUT_OF_REPORT)
+STALE = "ancien ?"                    # dernier statut connu trop vieux (> stale_days) : p = unknown_p
+STALE_DAYS = 7
+UNCERTAIN = (NOT_SUBMITTED, OUT_OF_REPORT, STALE)
 DEFAULT_UNKNOWN_P = 1.0
 
 

@@ -57,6 +57,27 @@ avertissement. Un joueur sans ligne dans le rapport prend un statut selon son é
 Le « ? » est affiché à côté du nom, et chaque sortie se termine par le nombre de joueurs proposés
 au statut inconnu. La projection devient proj = p_play x proj_if_play.
 
+### Historique des rapports
+
+Chaque rapport récupéré est archivé dans `data/injuries/report_AAAAMMJJ_HHMM_ET.csv` (jamais
+réécrit) ; les outils lisent tous les rapports archivés plus le dernier. Pour un joueur et le premier
+match de son équipe dans la fenêtre :
+
+- on prend son statut dans le rapport le plus récent où il figure, pour un match antérieur ou égal ;
+- ce statut est annulé (« non listé ») si un rapport plus récent, soumis par son équipe (lignes de
+  l'équipe, pas « NOT YET SUBMITTED »), ne le mentionne plus ;
+- sinon il est conservé avec son âge : motif « [dernier statut connu, il y a N j, rapport du 01/11
+  04:30 ET] » ; un Out garde p = 0, un autre statut garde son p_play ;
+- au-delà de `--stale-days` jours (défaut 7, compté depuis le rapport), il devient « ancien ? »
+  avec p = `--unknown-p`.
+
+```
+python -m src.data.injuries --at "2026-11-01 04:30"   # archive un rapport passé (heure ET)
+```
+
+Limite : une équipe qui soumet son rapport sans aucun blessé n'apparaît pas forcément dans le
+rapport ; dans ce cas, l'ancien statut n'est pas annulé.
+
 ### Calendrier (`src/data/schedule.py`)
 
 `--dates 2026-11-01,2026-11-02` (optimiseur et `buy.py`) exclut les équipes sans match à ces dates
@@ -155,8 +176,8 @@ Dunkest différent de `trades_open`), un avertissement s'affiche sans bloquer.
   joueurs gardés ne sont pas recomptés.
 - Coach non modélisé ; redistribution des minutes des absents absente (phase 3).
 - Un joueur possédé Out, sans match dans la fenêtre ou sans match NBA compte pour 0.
-- Le statut de blessure vient du dernier rapport seulement : un Out d'un rapport précédent est oublié
-  si le nouveau rapport ne liste plus le joueur (voir le compte rendu, correction à décider).
+- Le statut de blessure suit l'historique des rapports archivés (voir « Historique des rapports ») :
+  un Out reste Out tant qu'un rapport plus récent de son équipe ne l'a pas retiré.
 
 ## Demande précise (`src/buy.py`)
 

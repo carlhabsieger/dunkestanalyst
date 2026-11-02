@@ -7,13 +7,14 @@ particularité et on projette la moyenne de score Dunkest sur l'ensemble des mat
 import os
 import re
 import unicodedata
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
 
-from src.data.injuries import players_rows, restrict_dates, to_dunkest_name
-from src.model.injury_probs import (DEFAULT_UNKNOWN_P, NOT_LISTED, NOT_SUBMITTED, OUT, OUT_OF_REPORT,
-                                    is_uncertain, p_play_for)
+from src.data.injuries import ET, players_rows, restrict_dates, to_dunkest_name
+from src.model.injury_probs import (DEFAULT_UNKNOWN_P, NOT_LISTED, NOT_SUBMITTED, OUT, OUT_OF_REPORT, STALE,
+                                    STALE_DAYS, is_uncertain, p_play_for)
 from src.model.name_aliases import NAME_ALIASES
 
 LOGS_PATH = "data/player_logs.csv"
@@ -130,65 +131,108 @@ def _team_target_dates(report, dates, first_games):
     return rep.groupby("team_code").game_date.min().to_dict()
 
 
-def match_injuries(d, report, aliases=NAME_ALIASES, dates=None, first_games=None):
-    """Statut et motif du rapport pour chaque joueur de d, rapportés au match qui compte.
+def _now_et(now=None):
+    """Heure ET naïve (comme les heures de rapport) ; now peut être naïf (déjà ET) ou avec fuseau."""
+    if now is None:
+        return datetime.now(ET).replace(tzinfo=None)
+    return now.astimezone(ET).replace(tzinfo=None) if now.tzinfo else now
 
-    Pour chaque équipe, le match qui compte est son premier match de la fenêtre (first_games, issu
-    du calendrier) ; les lignes d'un match suivant dans la fenêtre sont ignorées. Pour un joueur :
-    - ligne à la date de ce match : son statut ;
-    - sinon ligne à une date antérieure : dernier statut connu (hypothèse : un Out reste Out), avec
-      son âge en jours (status_age_days) et le motif préfixé « [statut du 01/11, 3 j avant] » ;
-    - sinon selon son équipe à cette date : « rapport non soumis » si « NOT YET SUBMITTED »,
-      « non listé » si l'équipe a des lignes joueurs, « hors rapport » sinon.
-    Retourne (info, unmatched) : info a les colonnes status, reason, status_age_days alignées sur
-    d.index ; unmatched = lignes joueurs du rapport (dans la fenêtre) sans joueur Dunkest.
+
+def with_report_time(report, now=None):
+    """Garantit la colonne report_time (un rapport unique sans heure est daté de maintenant)."""
+    if "report_time" in report and report.report_time.notna().all():
+        return report
+    return report.assign(report_time=pd.Timestamp(_now_et(now)))
+
+
+def latest_report(report):
+    """Lignes du rapport le plus récent seulement."""
+    if "report_time" not in report or report.empty:
+        return report
+    return report[report.report_time == report.report_time.max()]
+
+
+def match_injuries(d, report, aliases=NAME_ALIASES, dates=None, first_games=None, now=None,
+                   stale_days=STALE_DAYS):
+    """Statut et motif pour chaque joueur de d, rapportés au match qui compte, sur tous les rapports.
+
+    report : un ou plusieurs rapports (colonne report_time ; sans elle, un seul rapport daté de maintenant).
+    Le match qui compte est le premier match de l'équipe dans la fenêtre (first_games, issu du
+    calendrier). Pour un joueur :
+    - on prend sa ligne dans le rapport le PLUS RÉCENT où il figure, pour un match antérieur ou égal
+      à ce match (dans ce rapport, la ligne du match le plus proche) ;
+    - ce statut est ANNULÉ (« non listé ») si un rapport plus récent, soumis par son équipe (lignes
+      joueurs de l'équipe pour un match entre celui du statut et le match qui compte), ne le mentionne plus ;
+    - un statut hérité (autre match que celui qui compte, ou rapport plus ancien que le dernier) garde
+      son statut et son p_play (un Out garde p = 0), avec son âge en jours depuis le rapport ; au-delà
+      de stale_days, il devient « ancien ? » ;
+    - sans ligne, selon l'équipe dans le rapport le plus récent qui couvre ce match : « rapport non
+      soumis », « non listé » ou « hors rapport ».
+    Retourne (info, unmatched) : info a les colonnes status, reason, status_age_days alignées sur d.index ;
+    unmatched = lignes joueurs du dernier rapport (dans la fenêtre) sans joueur Dunkest.
     """
+    now = _now_et(now)
+    report = with_report_time(report, now)
+    latest_t = report.report_time.max() if len(report) else None
     rows = players_rows(report)
     rows = rows.assign(key=rows["Player Name"].map(to_dunkest_name).map(normalize_name))
-    by_key = {k: g.sort_values("game_date", kind="stable") for k, g in rows.groupby("key")}
-    ns = set(map(tuple, report.loc[report.not_submitted, ["team_code", "game_date"]].values))
-    sub = set(map(tuple, rows[["team_code", "game_date"]].values))
-    target = _team_target_dates(report, dates, first_games)
+    rows = rows.dropna(subset=["game_date"])
+    by_key = {k: g for k, g in rows.groupby("key")}
+    keys_by_report = {t: set(g.key) for t, g in rows.groupby("report_time")}
+    subm = {t: set(map(tuple, g[["team_code", "game_date"]].values)) for t, g in rows.groupby("report_time")}
+    team_state = {}                     # (équipe, date) -> statut, du plus ancien au plus récent rapport
+    for t, g in report.sort_values("report_time", kind="stable").groupby("report_time", sort=True):
+        for (tm, gd), gg in g.groupby(["team_code", "game_date"]):
+            team_state[(tm, gd)] = NOT_SUBMITTED if gg.not_submitted.all() else NOT_LISTED
+    target = _team_target_dates(latest_report(report), dates, first_games)
+
+    def cancelled(r, team, t):
+        later = [rt for rt in keys_by_report if rt > r.report_time]
+        return any(r.key not in keys_by_report[rt] and
+                   any(tm == team and r.game_date <= gd <= t for tm, gd in subm[rt]) for rt in later)
 
     keys = dunkest_keys(d.name, aliases)
     teams = d.team_code if "team_code" in d else pd.Series(None, index=d.index)
     out = []
     for k, team in zip(keys, teams):
         t = target.get(team)
-        g = by_key.get(k)
         if t is None:
             out.append((OUT_OF_REPORT, "", np.nan))
             continue
-        if g is not None:
-            at = g[g.game_date == t]
-            if len(at):
-                out.append((at["Current Status"].iloc[0], at.Reason.iloc[0], np.nan))
+        g = by_key.get(k)
+        g = g[g.game_date <= t] if g is not None else None
+        if g is not None and len(g):
+            r = g.sort_values(["report_time", "game_date"], kind="stable").iloc[-1]
+            if cancelled(r, team, t):
+                out.append((NOT_LISTED, f"[annulé : plus listé dans un rapport plus récent de {team}]", np.nan))
                 continue
-            before = g[g.game_date < t]
-            if len(before):
-                r = before.iloc[-1]
-                age = (t - r.game_date).days
-                out.append((r["Current Status"], f"[statut du {r.game_date:%d/%m}, {age} j avant] {r.Reason}", age))
+            if r.report_time == latest_t and r.game_date == t:
+                out.append((r["Current Status"], r.Reason, np.nan))
                 continue
-        if (team, t) in ns:
-            out.append((NOT_SUBMITTED, "", np.nan))
-        else:
-            out.append((NOT_LISTED if (team, t) in sub else OUT_OF_REPORT, "", np.nan))
+            age = (now.date() - pd.Timestamp(r.report_time).date()).days
+            when = f"rapport du {pd.Timestamp(r.report_time):%d/%m %H:%M} ET"
+            if age > stale_days:
+                out.append((STALE, f"[{r['Current Status']} il y a {age} j, {when} : trop ancien] {r.Reason}", age))
+            else:
+                out.append((r["Current Status"], f"[dernier statut connu, il y a {age} j, {when}] {r.Reason}", age))
+            continue
+        out.append((team_state.get((team, t), OUT_OF_REPORT), "", np.nan))
     info = pd.DataFrame(out, index=d.index, columns=["status", "reason", "status_age_days"])
-    window = players_rows(restrict_dates(report, dates))
+    window = players_rows(restrict_dates(latest_report(report), dates))
     unmatched = window[~window["Player Name"].map(to_dunkest_name).map(normalize_name).isin(set(keys))]
     return info, unmatched
 
 
-def apply_injuries(d, report, aliases=NAME_ALIASES, dates=None, unknown_p=DEFAULT_UNKNOWN_P, first_games=None):
+def apply_injuries(d, report, aliases=NAME_ALIASES, dates=None, unknown_p=DEFAULT_UNKNOWN_P, first_games=None,
+                   now=None, stale_days=STALE_DAYS):
     """Ajoute status, reason, status_age_days, p_play, proj_if_play (ancienne proj) et
     proj = p_play * proj_if_play.
 
     Retourne (d, lignes du rapport non rapprochées). Un statut écrit mais inconnu reçoit 0,5
-    (avertissement) ; « rapport non soumis » et « hors rapport » reçoivent unknown_p.
+    (avertissement) ; « rapport non soumis », « hors rapport » et « ancien ? » reçoivent unknown_p.
     first_games : {équipe: date du premier match de la fenêtre} (calendrier), voir match_injuries.
     """
-    info, unmatched = match_injuries(d, report, aliases, dates, first_games)
+    info, unmatched = match_injuries(d, report, aliases, dates, first_games, now, stale_days)
     d = d.assign(status=info.status, reason=info.reason, status_age_days=info.status_age_days,
                  p_play=p_play_for(info.status, unknown_p), proj_if_play=d.proj)
     d["proj"] = d.p_play * d.proj_if_play
@@ -235,7 +279,7 @@ def injury_match_report(unmatched, n_report, top=15):
 
 
 def build_projections(df, source="nba", logs_path=LOGS_PATH, verbose=True, injuries=None, dates=None, first_games=None,
-                      unknown_p=DEFAULT_UNKNOWN_P):
+                      unknown_p=DEFAULT_UNKNOWN_P, stale_days=STALE_DAYS):
     """Projections pour les CLI. Retourne (d, gp_label).
 
     source "nba" : la colonne gp vaut n (matchs NBA), l'ancienne valeur passe dans gp_dunkest.
@@ -259,9 +303,10 @@ def build_projections(df, source="nba", logs_path=LOGS_PATH, verbose=True, injur
     if callable(injuries):
         injuries = injuries()
     if injuries is not None:
-        d, _ = apply_injuries(d, injuries, dates=dates, unknown_p=unknown_p, first_games=first_games)
+        d, _ = apply_injuries(d, injuries, dates=dates, unknown_p=unknown_p, first_games=first_games,
+                              stale_days=stale_days)
         # Non rapprochés calculés sur tout le snapshot : un blessé sans match NBA reste « rapproché ».
-        _, unmatched = match_injuries(df, injuries, dates=dates, first_games=first_games)
+        _, unmatched = match_injuries(df, injuries, dates=dates, first_games=first_games, stale_days=stale_days)
         if verbose:
-            print(injury_match_report(unmatched, len(players_rows(restrict_dates(injuries, dates)))))
+            print(injury_match_report(unmatched, len(players_rows(restrict_dates(latest_report(injuries), dates)))))
     return d, gp_label

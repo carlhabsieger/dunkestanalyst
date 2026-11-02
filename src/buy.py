@@ -368,6 +368,8 @@ def main(argv=None):
                     help="exclut les candidats dont la probabilité de jouer est sous ce seuil (défaut 0)")
     ap.add_argument("--unknown-p", type=float, default=DEFAULT_UNKNOWN_P,
                     help="probabilité de jouer si le statut est inconnu : rapport non soumis ou hors rapport (défaut 1)")
+    ap.add_argument("--stale-days", type=int, default=7,
+                    help="au-delà de N jours, un statut hérité d'un ancien rapport devient « ancien ? » (défaut 7)")
     ap.add_argument("--dates", default=None,
                     help="dates de match AAAA-MM-JJ séparées par des virgules : équipes sans match exclues")
     a = ap.parse_args(argv)
@@ -382,7 +384,7 @@ def main(argv=None):
         # Règle Dunkest : seul le premier match de chaque équipe dans la fenêtre compte.
         fg = first_game_dates(schedule, dates) if dates else None
         d, gp_label = build_projections(df, a.proj_source, a.logs, injuries=report, dates=dates,
-                                        first_games=fg, unknown_p=a.unknown_p)
+                                        first_games=fg, unknown_p=a.unknown_p, stale_days=a.stale_days)
         labels = match_labels(schedule, dates) if dates else None
     except LogsNotFoundError as e:
         print(f"Erreur : {e}", file=sys.stderr)

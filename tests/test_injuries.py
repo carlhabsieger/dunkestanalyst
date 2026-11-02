@@ -229,8 +229,9 @@ def test_statut_anterieur_conserve_avec_dates():
                       "proj": [30.0, 10.0]})
     out = apply_injuries(d, rep, dates=[date(2026, 11, 2)])[0].set_index("name")
     assert out.loc["Paolo Banchero", "status"] == "Out" and out.loc["Paolo Banchero", "proj"] == 0.0
-    assert out.loc["Paolo Banchero", "reason"].startswith("[statut du 01/11, 1 j avant]")
-    assert out.loc["Paolo Banchero", "status_age_days"] == 1
+    # Rapport unique sans heure : daté de maintenant, âge 0 (âge compté depuis le rapport).
+    assert out.loc["Paolo Banchero", "reason"].startswith("[dernier statut connu, il y a 0 j, rapport du")
+    assert out.loc["Paolo Banchero", "status_age_days"] == 0
     assert out.loc["Autre Orl", "status"] == NOT_SUBMITTED
 
 
@@ -268,5 +269,5 @@ def test_age_du_statut_anterieur():
     rep = report([("Banchero, Paolo", "Out")], team="Orlando Magic")           # match du 01/11
     d = pd.DataFrame({"id": [1], "name": ["Paolo Banchero"], "team_code": ["ORL"], "proj": [30.0]})
     out = apply_injuries(d, rep, dates=[date(2026, 11, 4)], first_games={"ORL": date(2026, 11, 4)})[0]
-    assert out.status.iloc[0] == "Out" and out.status_age_days.iloc[0] == 3
-    assert short_reason(out.reason.iloc[0]).startswith("[statut du 01/11, 3 j avant] Test")
+    assert out.status.iloc[0] == "Out" and out.status_age_days.iloc[0] == 0 and out.proj.iloc[0] == 0.0
+    assert short_reason(out.reason.iloc[0], width=80).startswith("[dernier statut connu, il y a 0 j")

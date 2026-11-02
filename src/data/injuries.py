@@ -4,6 +4,7 @@
 
 Les timestamps du package sont naïfs et en heure de l'Est (America/New_York).
 """
+import argparse
 import os
 import shutil
 import sys
@@ -17,6 +18,7 @@ import pandas as pd
 ET = ZoneInfo("America/New_York")
 PARIS = ZoneInfo("Europe/Paris")
 REPORT_PATH = "data/injuries_latest.csv"
+ARCHIVE_DIR = "data/injuries"          # un fichier par rapport récupéré (data/ est ignoré par git)
 MAX_TRIES = 36
 PAUSE_S = 0.5
 JAVA_HINT = "Java est requis pour lire le PDF : installe-le avec `sudo apt install default-jre`."
@@ -164,24 +166,101 @@ def report_age_line(t_et, now=None):
             f"il y a {mins // 60} h {mins % 60:02d} min")
 
 
-def get_report(path=REPORT_PATH, verbose=True):
-    """Récupère le dernier rapport en ligne et le sauvegarde. Pour les CLI."""
+def archive_path(t_et, root=ARCHIVE_DIR):
+    return os.path.join(root, f"report_{t_et:%Y%m%d_%H%M}_ET.csv")
+
+
+def archive_report(df, t_et, root=ARCHIVE_DIR):
+    """Sauvegarde data/injuries/report_AAAAMMJJ_HHMM_ET.csv sans recréer un fichier existant.
+
+    Retourne (chemin, créé ou non).
+    """
+    path = archive_path(t_et, root)
+    if os.path.exists(path):
+        return path, False
+    save_report(df, t_et, path)
+    return path, True
+
+
+def read_report_csv(path):
+    """Relit un rapport sauvegardé (types restaurés) avec sa colonne report_time (ET, naïve)."""
+    df = pd.read_csv(path)
+    df["game_date"] = pd.to_datetime(df.game_date, errors="coerce").dt.date
+    df["not_submitted"] = df.not_submitted.astype(str).str.lower().isin(["true", "1"])
+    df["report_time"] = pd.to_datetime(df.report_time_et, format="%Y-%m-%d %H:%M")
+    return df
+
+
+def load_reports(latest=None, latest_t=None, root=ARCHIVE_DIR):
+    """Tous les rapports archivés plus le dernier (s'il est fourni), un seul exemplaire par heure de rapport."""
+    parts = [read_report_csv(os.path.join(root, f)) for f in sorted(os.listdir(root))
+             if f.startswith("report_") and f.endswith(".csv")] if os.path.isdir(root) else []
+    if latest is not None:
+        parts = [p for p in parts if not (p.report_time == pd.Timestamp(latest_t)).all()]
+        parts.append(latest.assign(report_time_et=latest_t.strftime("%Y-%m-%d %H:%M"),
+                                   report_time=pd.Timestamp(latest_t)))
+    if not parts:
+        return pd.DataFrame()
+    # Même résolution partout (relu : ns ; créé par pd.Timestamp : us), sinon pandas avertit au concat.
+    parts = [p.assign(report_time=p.report_time.astype("datetime64[ns]")) for p in parts]
+    return pd.concat(parts, ignore_index=True).sort_values("report_time", kind="stable").reset_index(drop=True)
+
+
+def get_report(path=REPORT_PATH, verbose=True, root=ARCHIVE_DIR):
+    """Récupère le dernier rapport en ligne, l'archive, et renvoie (heure du dernier, tous les rapports).
+
+    Le DataFrame renvoyé contient les rapports archivés plus le dernier, avec une colonne report_time ;
+    le statut d'un joueur se lit ensuite rapport par rapport (src.model.projections.match_injuries).
+    """
     t, df = fetch_latest_report()
     save_report(df, t, path)
+    archive_report(df, t, root)
+    reports = load_reports(df, t, root)
     if verbose:
         _, ns = report_teams(df)
+        times = sorted(reports.report_time.unique())
         print(f"Rapport blessures : {report_age_line(t)} | {len(players_rows(df))} joueurs listés, "
-              f"{len(ns)} équipe(s) au premier match sans rapport soumis")
-    return t, df
+              f"{len(ns)} équipe(s) au premier match sans rapport soumis | {len(times)} rapport(s) "
+              f"utilisé(s), du {pd.Timestamp(times[0]):%d/%m %H:%M} au {pd.Timestamp(times[-1]):%d/%m %H:%M} ET")
+    return t, reports
 
 
-def main():
+def fetch_report_at(t_et, check=None, get=None):
+    """Rapport publié à une heure ET précise (rattrapage d'un rapport non archivé)."""
+    if check is None or get is None:
+        if shutil.which("java") is None:
+            raise InjuryReportError("Java introuvable. " + JAVA_HINT)
+        from nbainjuries import injury
+        check = check or injury.check_reportvalid
+        get = get or (lambda t: injury.get_reportdata(t, return_df=True))
+    if not check(t_et):
+        raise InjuryReportError(f"Aucun rapport publié le {t_et:%Y-%m-%d %H:%M} ET.")
+    return clean_report(get(t_et))
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="Dernier rapport officiel des blessures NBA (archivé dans data/injuries/).")
+    ap.add_argument("--at", default=None, help='archive un rapport passé : "AAAA-MM-JJ HH:MM" (heure ET)')
+    a = ap.parse_args(argv)
+    if a.at:
+        try:
+            t = datetime.strptime(a.at, "%Y-%m-%d %H:%M")
+            path, created = archive_report(fetch_report_at(t), t)
+        except ValueError:
+            print(f"Erreur : --at attend « AAAA-MM-JJ HH:MM », reçu « {a.at} ».", file=sys.stderr)
+            return 1
+        except InjuryReportError as e:
+            print(f"Erreur : {e}", file=sys.stderr)
+            return 1
+        print(f"{'Archivé' if created else 'Déjà archivé'} : {path}")
+        return 0
     try:
-        t, df = get_report()
+        t, reports = get_report()
     except InjuryReportError as e:
         print(f"Erreur : {e}", file=sys.stderr)
         return 1
-    print(f"Sauvegardé dans {REPORT_PATH}")
+    df = reports[reports.report_time == pd.Timestamp(t)]
+    print(f"Sauvegardé dans {REPORT_PATH} et {archive_path(t)}")
     print("\nStatuts rencontrés :")
     print(players_rows(df)["Current Status"].value_counts().to_string())
     teams_in, teams_ns = report_teams(df)
