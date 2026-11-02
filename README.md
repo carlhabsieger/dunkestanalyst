@@ -172,8 +172,11 @@ Dunkest différent de `trades_open`), un avertissement s'affiche sans bloquer.
 
 - Projections bruitées (peu de matchs) : un écart de moins de 2 points entre deux options est dans le bruit.
 - Prix de vente supposé égal au prix actuel du snapshot (NON vérifié) : budget = prix actuels + cash.
-- `--horizon H` est optimiste : les achats comptent H fois, le coût de 5 points une seule fois, et les
-  joueurs gardés ne sont pas recomptés.
+- `--horizon H` : chaque effectif (baseline comprise, joueurs gardés, sortants et entrants) est compté
+  sur H journées, le coût de 5 points par transfert une seule fois. Exemple : un échange qui rapporte
+  +2 par journée donne +6 - 5 = +1 net avec H = 3, et +2 - 5 = -3 sans l'option. Hypothèse : même
+  composition et mêmes projections sur ces H journées (ni calendrier, ni blessures, ni transferts
+  intermédiaires) ; la fenêtre --dates ne concerne que la première journée.
 - Coach non modélisé ; redistribution des minutes des absents absente (phase 3).
 - Un joueur possédé Out, sans match dans la fenêtre ou sans match NBA compte pour 0.
 - Le statut de blessure suit l'historique des rapports archivés (voir « Historique des rapports ») :

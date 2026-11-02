@@ -133,9 +133,17 @@ def test_f_absent_du_snapshot_sans_prix():
     assert info.set_index("name").loc["Fantome Absent", "cr"] == 5.0
 
 
-def test_horizon_compte_les_achats_plusieurs_fois():
-    _, _, best = T.suggest(owned(), cand("X", "G", "FFF", 10), cash=0, max_transfers=1, horizon=2)
-    assert best is not None and best.gross == pytest.approx(0.5 * 10 * 2 - 0.5 * 2)   # 9 brut, net 4
+def test_horizon_tout_l_effectif_compte_h_fois():
+    # X (6) remplace G4 (2) sur le banc : +0,5 x (6 - 2) = +2 par journée.
+    x = cand("X", "G", "FFF", 6)
+    base3, opts3, best3 = T.suggest(owned(), x, cash=0, max_transfers=1, horizon=3)
+    assert base3.value == pytest.approx(3 * BASE)                          # baseline comptée 3 fois
+    assert best3 is not None and best3.plan.inn == ["X"] and best3.plan.out == ["G4"]
+    assert best3.gross == pytest.approx(6.0) and best3.cost == 5 and best3.net == pytest.approx(1.0)
+    _, opts1, best1 = T.suggest(owned(), x, cash=0, max_transfers=1)       # sans l'option
+    assert best1 is None
+    forced = opts1[1].forced
+    assert forced.value - BASE == pytest.approx(2.0) and forced.value - BASE - 5 == pytest.approx(-3.0)
 
 
 # ------------------------------------------------ add / remove / swap

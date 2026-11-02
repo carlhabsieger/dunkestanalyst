@@ -280,7 +280,7 @@ def lineup(owned):
 @dataclass
 class Plan:
     k_max: int
-    value: float                      # score pondéré de la composition (achats x horizon)
+    value: float                      # score pondéré de la composition sur H journées (x horizon)
     squad: pd.DataFrame               # 10 joueurs, colonnes role, owned
     formation: str
     out: list = field(default_factory=list)
@@ -309,7 +309,8 @@ def solve_transfers(owned, candidates, budget, max_new, horizon=1, coach="", exa
     """MILP : meilleur effectif de 10 avec au plus max_new joueurs non possédés (exactement si exact).
 
     Objectif : somme pondérée des projections (titulaires et 6e homme 1,0, banc 0,5, capitaine +0,5),
-    les joueurs achetés comptant horizon fois, MOINS 5 points par joueur acheté.
+    sur horizon journées (TOUS les joueurs, gardés comme achetés, comptent horizon fois, comme la
+    baseline), MOINS 5 points par joueur acheté, comptés une seule fois.
     """
     pool = pd.concat([owned.assign(owned=True),
                       candidates[~candidates.name.isin(set(owned.name))].assign(owned=False)],
@@ -320,7 +321,7 @@ def solve_transfers(owned, candidates, budget, max_new, horizon=1, coach="", exa
     pos = pool.position.to_numpy()
     teams = pool.team_code.to_numpy()
     new = (~pool.owned).to_numpy()
-    w = np.where(new, float(horizon), 1.0)
+    w = np.full(n, float(horizon))           # même effectif sur H journées : tout le monde compte H fois
     X, S, M, K, Y = 0, n, 2 * n, 3 * n, 4 * n
     fms = list(FORMATIONS.items())
     N = Y + len(fms)
@@ -368,12 +369,12 @@ def solve_transfers(owned, candidates, budget, max_new, horizon=1, coach="", exa
     squad["role"] = ["capitaine" if z[K + i] else "titulaire" if z[S + i] else "6e homme" if z[M + i]
                      else "banc" for i in np.flatnonzero(sel)]
     weight = squad.role.map({"capitaine": 1.5, "titulaire": 1.0, "6e homme": 1.0, "banc": 0.5})
-    value = float((squad.proj * weight * np.where(squad.owned, 1.0, horizon)).sum())
+    value = float(horizon * (squad.proj * weight).sum())
     fm = fms[int(np.argmax(z[Y:N]))][0]
     plan = Plan(max_new, value, squad, fm,
                 out=sorted(set(owned.name) - set(squad.name)),
                 inn=list(squad[~squad.owned].name),
-                credits_left=round(budget - float(squad.cr.sum()), 2))
+                credits_left=round(budget - float(squad.cr.sum()), 2) + 0.0)     # + 0.0 : pas de « -0.0 »
     return plan
 
 
@@ -726,11 +727,13 @@ def cmd_suggest(a):
     print(f"\nBudget : {owned.cr.sum():.1f} (joueurs) + {team['cash']:.1f} (cash) = {owned.cr.sum() + team['cash']:.1f}")
     print(SELL_PRICE_NOTE)
     if a.horizon > 1:
-        print(f"Horizon {a.horizon} : les projections des joueurs achetés comptent {a.horizon} fois, le coût de "
-              f"5 points une seule fois (option optimiste).")
+        print(f"Horizon {a.horizon} : chaque effectif (baseline comprise) est compté sur {a.horizon} journées "
+              f"avec les mêmes projections ; le coût de 5 points par transfert n'est compté qu'une fois "
+              f"(hypothèse : composition et projections inchangées sur ces journées).")
     lu_value, lu_fm, _ = lineup(owned)          # même valeur ; formation identique à show / lineup en cas d'égalité
-    print(f"\nBaseline (aucun transfert) : {base.value:.1f} points attendus, formation {lu_fm}"
-          + ("" if abs(lu_value - base.value) < 1e-6 else f" (lineup : {lu_value:.1f}, écart à vérifier)"))
+    per_day = f" ({base.value / a.horizon:.1f} par journée x {a.horizon})" if a.horizon > 1 else ""
+    print(f"\nBaseline (aucun transfert) : {base.value:.1f} points attendus{per_day}, formation {lu_fm}"
+          + ("" if abs(lu_value * a.horizon - base.value) < 1e-6 else f" (lineup : {lu_value:.1f}, écart à vérifier)"))
     for o in plans:
         if o.k == 0:
             continue
@@ -861,7 +864,9 @@ def main(argv=None):
     p = sub.add_parser("lineup"); p.add_argument("name"); _common(p)
     p = sub.add_parser("suggest"); p.add_argument("name"); _common(p)
     p.add_argument("--max-transfers", type=int, default=3)
-    p.add_argument("--horizon", type=int, default=1, help="optimiste : achats comptés H fois, coût une fois")
+    p.add_argument("--horizon", type=int, default=1,
+                   help="nombre de journées : tout l'effectif (baseline comprise) compte H fois, "
+                        "le coût de 5 points par transfert une seule fois (défaut 1)")
     p.add_argument("--min-net-gain", type=float, default=1.0)
     p.add_argument("--min-gp", type=int, default=1)
     p.add_argument("--allow-out", action="store_true")
