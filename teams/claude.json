@@ -1,0 +1,12 @@
+{
+  "players": [
+    "Domantas Sabonis", "Cameron Boozer", "Matisse Thybulle", "Trevon Brazile",
+    "Cedric Coward", "Joan Beringer", "Mo Bamba", "Stephen Curry",
+    "Ty Jerome", "Zach LaVine"
+  ],
+  "cash": 0.0,
+  "coach": "Joe Mazzulla (BOS)",
+  "excluded": [],
+  "excluded_from_teams": [],
+  "price_overrides": {}
+}
